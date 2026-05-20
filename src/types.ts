@@ -66,8 +66,10 @@ export interface BaseObject {
 
 export interface Rack extends BaseObject {
   type: 'rack';
-  code: string;
-  shelves: number;
+  rackGroup: string;
+  rackNumber: number;
+  rackCode: string;
+  shelfCount: number;
   binsPerShelf: number;
   orientation: 'horizontal' | 'vertical';
   productGroup: ProductGroup;
@@ -135,9 +137,13 @@ export type WarehouseObjectNoId =
 
 export interface LocationCode {
   locationCode: string;
+  rackGroup: string;
+  rackNumber: number;
   rackCode: string;
-  shelf: number;
-  bin: number;
+  shelfCode: string;
+  binCode: string;
+  shelfNumber: number;
+  binNumber: number;
   rackName: string;
   productGroup: ProductGroup;
   x: number;

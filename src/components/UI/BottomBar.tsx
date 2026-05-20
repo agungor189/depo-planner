@@ -30,7 +30,7 @@ export function BottomBar() {
       <div className="flex items-center gap-4">
         <span className="hidden md:inline">Kullanım: {trimNumber(usage.utilizationPercent, 1)}%</span>
         <span className="hidden lg:inline">Boş alan: {trimNumber(usage.freeArea)} m²</span>
-        <span>Seçili: {selected ? (selected.type === 'rack' ? `Raf ${selected.code}` : selected.name) : 'Yok'}</span>
+        <span>Seçili: {selected ? (selected.type === 'rack' ? `Raf ${selected.rackCode}` : selected.name) : 'Yok'}</span>
         <span className={`flex items-center gap-1.5 ${errorCount ? 'text-red-300' : 'text-emerald-300'}`}>
           {errorCount ? <AlertTriangle className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
           {warnings.length} uyarı

@@ -10,7 +10,7 @@ import {
   WarehouseObject,
 } from '../types';
 
-export const APP_VERSION = 2;
+export const APP_VERSION = 3;
 
 export const DEFAULT_WAREHOUSE_CONFIG: WarehouseConfig = {
   name: 'DSDST Depo',
@@ -32,7 +32,7 @@ export const DEFAULT_GRID_SETTINGS: GridSettings = {
 
 export const DEFAULT_LOCATION_SETTINGS: LocationCodeSettings = {
   format: 'standard',
-  shelfPrefix: '',
+  shelfPrefix: 'K',
   binPrefix: 'P',
   separator: '-',
   qrPrefix: 'LOC',
@@ -121,12 +121,83 @@ export function roundMeters(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
 
+export function normalizeRackGroup(group?: string): string {
+  const cleaned = String(group || 'A')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+  return cleaned || 'A';
+}
+
+export function buildRackCode(rackGroup: string, rackNumber: number): string {
+  return `${normalizeRackGroup(rackGroup)}${Math.max(1, Math.floor(Number(rackNumber) || 1))}`;
+}
+
+export function parseRackCode(value?: string): { rackGroup: string; rackNumber: number } {
+  const text = String(value || 'A1').trim().toUpperCase();
+  const match = text.match(/^([A-Z]+)(\d+)$/);
+  if (match) {
+    return {
+      rackGroup: normalizeRackGroup(match[1]),
+      rackNumber: Math.max(1, Number(match[2])),
+    };
+  }
+
+  const legacyLetter = text.match(/^([A-Z]+)$/);
+  if (legacyLetter) {
+    return { rackGroup: normalizeRackGroup(legacyLetter[1]), rackNumber: 1 };
+  }
+
+  return { rackGroup: 'A', rackNumber: 1 };
+}
+
+export function getNextRackNumber(objects: WarehouseObject[], rackGroup: string): number {
+  const group = normalizeRackGroup(rackGroup);
+  const usedNumbers = objects
+    .filter((object): object is Rack => object.type === 'rack' && normalizeRackGroup(object.rackGroup) === group)
+    .map((rack) => Math.max(1, Math.floor(Number(rack.rackNumber) || 1)));
+
+  for (let number = 1; number <= usedNumbers.length + 1; number += 1) {
+    if (!usedNumbers.includes(number)) return number;
+  }
+
+  return usedNumbers.length + 1;
+}
+
+export function getNextRackIdentity(objects: WarehouseObject[], preferredGroup = 'A') {
+  const rackGroup = normalizeRackGroup(preferredGroup);
+  const rackNumber = getNextRackNumber(objects, rackGroup);
+  return { rackGroup, rackNumber, rackCode: buildRackCode(rackGroup, rackNumber) };
+}
+
+export function ensureUniqueRackIdentity(
+  rack: Pick<Rack, 'rackGroup' | 'rackNumber' | 'id'>,
+  objects: WarehouseObject[],
+) {
+  const rackGroup = normalizeRackGroup(rack.rackGroup);
+  let rackNumber = Math.max(1, Math.floor(Number(rack.rackNumber) || 1));
+  const exists = (number: number) =>
+    objects.some(
+      (object) =>
+        object.type === 'rack' &&
+        object.id !== rack.id &&
+        normalizeRackGroup(object.rackGroup) === rackGroup &&
+        Math.max(1, Math.floor(Number(object.rackNumber) || 1)) === number,
+    );
+
+  if (exists(rackNumber)) {
+    rackNumber = getNextRackNumber(objects.filter((object) => object.id !== rack.id), rackGroup);
+  }
+
+  return { rackGroup, rackNumber, rackCode: buildRackCode(rackGroup, rackNumber) };
+}
+
 export function isSolidObject(object: WarehouseObject): boolean {
   return ['rack', 'column', 'packing', 'shipping', 'receiving'].includes(object.type) && object.visible;
 }
 
 export function getObjectLabel(object: WarehouseObject): string {
-  if (object.type === 'rack') return `Raf ${object.code}`;
+  if (object.type === 'rack') return `Raf ${object.rackCode}`;
   if (object.type === 'column') return object.name || 'Kolon';
   if (object.type === 'packing') return object.name || 'Paketleme';
   if (object.type === 'path') return object.name || 'Yürüme Yolu';
@@ -230,7 +301,20 @@ export function validateLayout(
   });
 
   const racks = objects.filter((object): object is Rack => object.type === 'rack' && object.visible);
+  const seenRackCodes = new Map<string, string>();
   racks.forEach((rack, index) => {
+    const rackCode = rack.rackCode || buildRackCode(rack.rackGroup, rack.rackNumber);
+    const existingId = seenRackCodes.get(rackCode);
+    if (existingId) {
+      warnings.push({
+        id: `${rack.id}-${existingId}-duplicate-rack-code`,
+        severity: 'error',
+        objectIds: [rack.id, existingId],
+        message: `${rackCode} raf kodu birden fazla kullanılıyor.`,
+      });
+    }
+    seenRackCodes.set(rackCode, rack.id);
+
     const rackFootprint = getFootprint(rack);
     racks.slice(index + 1).forEach((other) => {
       const otherFootprint = getFootprint(other);
@@ -244,7 +328,7 @@ export function validateLayout(
             id: `${rack.id}-${other.id}-narrow-aisle-z`,
             severity: 'warning',
             objectIds: [rack.id, other.id],
-            message: `${rack.code} ve ${other.code} rafları arasındaki koridor çok dar.`,
+            message: `${rack.rackCode} ve ${other.rackCode} rafları arasındaki koridor çok dar.`,
           });
         }
       }
@@ -256,7 +340,7 @@ export function validateLayout(
             id: `${rack.id}-${other.id}-narrow-aisle-x`,
             severity: 'warning',
             objectIds: [rack.id, other.id],
-            message: `${rack.code} ve ${other.code} rafları arasındaki koridor çok dar.`,
+            message: `${rack.rackCode} ve ${other.rackCode} rafları arasındaki koridor çok dar.`,
           });
         }
       }
@@ -277,11 +361,11 @@ export function formatLocationCode(
   const binValue = settings.format === 'padded' ? String(bin).padStart(2, '0') : String(bin);
   const binCode = `${settings.binPrefix || ''}${binValue}`;
 
-  if (settings.format === 'verbose') return `RAF-${rack.code}-KAT-${shelf}-${binCode}`;
-  if (settings.format === 'slash') return `${rack.code}/L${shelf}/B${String(bin).padStart(2, '0')}`;
+  if (settings.format === 'verbose') return `RAF-${rack.rackCode}-KAT-${shelf}-${binCode}`;
+  if (settings.format === 'slash') return `${rack.rackCode}/L${shelf}/B${String(bin).padStart(2, '0')}`;
 
-  const shelfCode = settings.shelfPrefix ? `${settings.shelfPrefix}${shelfValue}` : shelfValue;
-  return [rack.code, shelfCode, binCode].join(separator);
+  const shelfCode = `${settings.shelfPrefix || 'K'}${shelfValue}`;
+  return [rack.rackCode, shelfCode, binCode].join(separator);
 }
 
 export function getQrContent(locationCode: string, settings: LocationCodeSettings): string {
@@ -290,17 +374,23 @@ export function getQrContent(locationCode: string, settings: LocationCodeSetting
 
 export function generateLocationCodes(rack: Rack, settings: LocationCodeSettings): LocationCode[] {
   const codes: LocationCode[] = [];
-  const shelves = Math.max(0, Math.floor(rack.shelves));
+  const shelves = Math.max(0, Math.floor(rack.shelfCount));
   const bins = Math.max(0, Math.floor(rack.binsPerShelf));
 
   for (let shelf = 1; shelf <= shelves; shelf += 1) {
     for (let bin = 1; bin <= bins; bin += 1) {
       const locationCode = formatLocationCode(rack, shelf, bin, settings);
+      const shelfCode = `${settings.shelfPrefix || 'K'}${settings.format === 'padded' ? String(shelf).padStart(2, '0') : shelf}`;
+      const binCode = `${settings.binPrefix || 'P'}${settings.format === 'padded' ? String(bin).padStart(2, '0') : bin}`;
       codes.push({
         locationCode,
-        rackCode: rack.code,
-        shelf,
-        bin,
+        rackGroup: rack.rackGroup,
+        rackNumber: rack.rackNumber,
+        rackCode: rack.rackCode,
+        shelfCode,
+        binCode,
+        shelfNumber: shelf,
+        binNumber: bin,
         rackName: rack.name,
         productGroup: rack.productGroup,
         x: rack.x,
@@ -353,7 +443,7 @@ export function calculateAreaUsage(objects: WarehouseObject[], warehouseConfig: 
     freeArea,
     utilizationPercent: totalWarehouseArea > 0 ? (usedArea / totalWarehouseArea) * 100 : 0,
     rackCount: racks.length,
-    totalLocationCount: racks.reduce((sum, rack) => sum + rack.shelves * rack.binsPerShelf, 0),
+    totalLocationCount: racks.reduce((sum, rack) => sum + rack.shelfCount * rack.binsPerShelf, 0),
     packingAreaCount: visibleObjects.filter((object) => object.type === 'packing').length,
     columnCount: visibleObjects.filter((object) => object.type === 'column').length,
   };
@@ -374,9 +464,13 @@ export function toCsv(rows: Array<Record<string, string | number>>, columns: str
 export function locationsToCsv(locations: LocationCode[]): string {
   const columns = [
     'locationCode',
+    'rackGroup',
+    'rackNumber',
     'rackCode',
-    'shelf',
-    'bin',
+    'shelfCode',
+    'binCode',
+    'shelfNumber',
+    'binNumber',
     'rackName',
     'productGroup',
     'x',
@@ -389,9 +483,13 @@ export function locationsToCsv(locations: LocationCode[]): string {
   return toCsv(
     locations.map((location) => ({
       locationCode: location.locationCode,
+      rackGroup: location.rackGroup,
+      rackNumber: location.rackNumber,
       rackCode: location.rackCode,
-      shelf: location.shelf,
-      bin: location.bin,
+      shelfCode: location.shelfCode,
+      binCode: location.binCode,
+      shelfNumber: location.shelfNumber,
+      binNumber: location.binNumber,
       rackName: location.rackName,
       productGroup: location.productGroup,
       x: location.x,
@@ -407,9 +505,11 @@ export function locationsToCsv(locations: LocationCode[]): string {
 
 export function racksToCsv(objects: WarehouseObject[]): string {
   const columns = [
+    'rackGroup',
+    'rackNumber',
     'rackCode',
     'rackName',
-    'shelves',
+    'shelfCount',
     'binsPerShelf',
     'totalLocations',
     'width',
@@ -422,11 +522,13 @@ export function racksToCsv(objects: WarehouseObject[]): string {
   const rows = objects
     .filter((object): object is Rack => object.type === 'rack')
     .map((rack) => ({
-      rackCode: rack.code,
+      rackGroup: rack.rackGroup,
+      rackNumber: rack.rackNumber,
+      rackCode: rack.rackCode,
       rackName: rack.name,
-      shelves: rack.shelves,
+      shelfCount: rack.shelfCount,
       binsPerShelf: rack.binsPerShelf,
-      totalLocations: rack.shelves * rack.binsPerShelf,
+      totalLocations: rack.shelfCount * rack.binsPerShelf,
       width: rack.width,
       depth: rack.depth,
       height: rack.height,

@@ -7,6 +7,7 @@ import {
   LocationCodeSettings,
   PlanSummary,
   ProductGroup,
+  Rack,
   UnitPreference,
   ViewMode,
   WarehouseConfig,
@@ -20,10 +21,16 @@ import {
   DEFAULT_LOCATION_SETTINGS,
   DEFAULT_WAREHOUSE_CONFIG,
   calculateAreaUsage,
+  buildRackCode,
   clampObjectToWarehouse,
+  ensureUniqueRackIdentity,
   generateAllLocationCodes,
   generateLocationCodes as generateRackLocationCodes,
+  getNextRackIdentity,
+  getNextRackNumber,
   locationsToCsv,
+  normalizeRackGroup,
+  parseRackCode,
   racksToCsv,
   roundMeters,
   summaryToCsv,
@@ -67,6 +74,17 @@ interface StoreState {
   updateGridSettings: (updates: Partial<GridSettings>) => void;
   updateLocationCodeSettings: (updates: Partial<LocationCodeSettings>) => void;
   addObject: (obj: WarehouseObjectNoId) => void;
+  addRackGroup: (options: {
+    rackGroup: string;
+    count: number;
+    shelfCount: number;
+    binsPerShelf: number;
+    width: number;
+    depth: number;
+    height: number;
+    productGroup: ProductGroup;
+    note: string;
+  }) => void;
   updateObject: (id: string, updates: Partial<WarehouseObject>) => void;
   deleteObject: (id: string) => void;
   removeObject: (id: string) => void;
@@ -122,15 +140,14 @@ function normalizeWarehouseConfig(raw?: Partial<WarehouseConfig>): WarehouseConf
   };
 }
 
-function nextRackCode(objects: WarehouseObject[]) {
-  const used = new Set(
-    objects.filter((object) => object.type === 'rack').map((object) => object.code.toUpperCase()),
-  );
-  for (let index = 0; index < 26; index += 1) {
-    const code = String.fromCharCode(65 + index);
-    if (!used.has(code)) return code;
-  }
-  return `R${used.size + 1}`;
+function normalizeLocationCodeSettings(raw?: Partial<LocationCodeSettings>): LocationCodeSettings {
+  return {
+    ...DEFAULT_LOCATION_SETTINGS,
+    ...(raw || {}),
+    shelfPrefix: raw?.shelfPrefix || DEFAULT_LOCATION_SETTINGS.shelfPrefix,
+    binPrefix: raw?.binPrefix || DEFAULT_LOCATION_SETTINGS.binPrefix,
+    separator: raw?.separator || DEFAULT_LOCATION_SETTINGS.separator,
+  };
 }
 
 function objectDefaults(type: WarehouseObject['type'], objects: WarehouseObject[]): WarehouseObjectNoId {
@@ -149,16 +166,18 @@ function objectDefaults(type: WarehouseObject['type'], objects: WarehouseObject[
   };
 
   if (type === 'rack') {
-    const code = nextRackCode(objects);
+    const identity = getNextRackIdentity(objects, 'A');
     return {
       ...base,
       type,
-      name: `${code} Rafı`,
+      name: `${identity.rackCode} Rafı`,
       width: 1.8,
       depth: 0.6,
       height: 1.8,
-      code,
-      shelves: 4,
+      rackGroup: identity.rackGroup,
+      rackNumber: identity.rackNumber,
+      rackCode: identity.rackCode,
+      shelfCount: 4,
       binsPerShelf: 7,
       orientation: 'horizontal',
       productGroup: 'Karışık' as ProductGroup,
@@ -267,12 +286,25 @@ function normalizeObject(
   } as WarehouseObject;
 
   if (normalized.type === 'rack') {
-    normalized.code = normalized.code || nextRackCode(objects);
-    normalized.shelves = Math.max(1, Math.floor(Number(normalized.shelves || 4)));
+    const rawRack = raw as Partial<Rack> & { code?: string; shelves?: number };
+    const parsed = parseRackCode(rawRack.rackCode || rawRack.code);
+    const rackGroup = normalizeRackGroup(rawRack.rackGroup || parsed.rackGroup);
+    const rackNumber = Math.max(1, Math.floor(Number(rawRack.rackNumber ?? parsed.rackNumber) || 1));
+    const identity = ensureUniqueRackIdentity(
+      { id, rackGroup, rackNumber },
+      objects,
+    );
+    normalized.rackGroup = identity.rackGroup;
+    normalized.rackNumber = identity.rackNumber;
+    normalized.rackCode = identity.rackCode;
+    normalized.shelfCount = Math.max(1, Math.floor(Number(rawRack.shelfCount ?? rawRack.shelves ?? 4)));
     normalized.binsPerShelf = Math.max(1, Math.floor(Number(normalized.binsPerShelf || 7)));
     normalized.orientation = normalized.orientation || 'horizontal';
     normalized.productGroup = normalized.productGroup || 'Karışık';
     normalized.showDimensions = normalized.showDimensions ?? true;
+    if (!raw.name) normalized.name = `${normalized.rackCode} Rafı`;
+    delete (normalized as Rack & { code?: string }).code;
+    delete (normalized as Rack & { shelves?: number }).shelves;
   }
 
   if (normalized.type === 'packing') {
@@ -310,7 +342,7 @@ function makePlan(
     unitPreference,
     gridSettings: { ...DEFAULT_GRID_SETTINGS },
     objects,
-    locationCodeSettings: { ...DEFAULT_LOCATION_SETTINGS },
+    locationCodeSettings: normalizeLocationCodeSettings(),
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -324,23 +356,26 @@ function createSampleObjects(): WarehouseObject[] {
   };
 
   [
-    ['A', 0.35, 0.45, 'Alüminyum'],
-    ['B', 3.0, 0.45, 'Döküm'],
-    ['C', 0.35, 2.15, 'Karbon Çelik'],
-    ['D', 3.0, 2.15, 'PPR'],
-    ['E', 0.35, 3.85, 'Karışık'],
-  ].forEach(([code, x, z, productGroup]) => {
+    ['A', 1, 0.35, 0.45, 'Alüminyum'],
+    ['A', 2, 3.0, 0.45, 'Alüminyum'],
+    ['B', 1, 0.35, 2.15, 'Döküm'],
+    ['C', 1, 3.0, 2.15, 'Karbon Çelik'],
+    ['C', 2, 0.35, 3.85, 'PPR'],
+  ].forEach(([rackGroup, rackNumber, x, z, productGroup]) => {
+    const rackCode = buildRackCode(String(rackGroup), Number(rackNumber));
     push({
       ...(objectDefaults('rack', objects) as Omit<WarehouseObject, 'id'>),
       type: 'rack',
-      code: String(code),
-      name: `${code} Rafı`,
+      rackGroup: String(rackGroup),
+      rackNumber: Number(rackNumber),
+      rackCode,
+      name: `${rackCode} Rafı`,
       x: Number(x),
       z: Number(z),
       width: 1.8,
       depth: 0.6,
       height: 1.8,
-      shelves: 4,
+      shelfCount: 4,
       binsPerShelf: 7,
       orientation: 'horizontal',
       productGroup: productGroup as ProductGroup,
@@ -428,7 +463,7 @@ function createSampleObjects(): WarehouseObject[] {
 function migratePlan(raw: any): WarehousePlan | null {
   if (!raw) return null;
 
-  if (raw.version === APP_VERSION && raw.warehouseConfig && Array.isArray(raw.objects)) {
+  if (raw.warehouseConfig && Array.isArray(raw.objects)) {
     const warehouseConfig = normalizeWarehouseConfig(raw.warehouseConfig);
     const objects = raw.objects.reduce((list: WarehouseObject[], object: any) => {
       if (!object?.type) return list;
@@ -443,7 +478,7 @@ function migratePlan(raw: any): WarehousePlan | null {
       unitPreference: raw.unitPreference === 'cm' ? 'cm' : 'm',
       gridSettings: { ...DEFAULT_GRID_SETTINGS, ...(raw.gridSettings || {}) },
       objects,
-      locationCodeSettings: { ...DEFAULT_LOCATION_SETTINGS, ...(raw.locationCodeSettings || {}) },
+      locationCodeSettings: normalizeLocationCodeSettings(raw.locationCodeSettings),
       createdAt: raw.createdAt || now(),
       updatedAt: raw.updatedAt || now(),
     };
@@ -574,7 +609,7 @@ export const useStore = create<StoreState>((set, get) => {
     warehouse: initialWarehouseConfig,
     unitPreference: activePlan?.unitPreference || 'm',
     gridSettings: initialGridSettings,
-    locationCodeSettings: activePlan?.locationCodeSettings || DEFAULT_LOCATION_SETTINGS,
+    locationCodeSettings: normalizeLocationCodeSettings(activePlan?.locationCodeSettings),
     objects: activePlan?.objects || [],
     selectedId: null,
     viewMode: '2D',
@@ -681,7 +716,7 @@ export const useStore = create<StoreState>((set, get) => {
           warehouse: DEFAULT_WAREHOUSE_CONFIG,
           unitPreference: 'm',
           gridSettings: DEFAULT_GRID_SETTINGS,
-          locationCodeSettings: DEFAULT_LOCATION_SETTINGS,
+          locationCodeSettings: normalizeLocationCodeSettings(),
           objects: [],
           selectedId: null,
           plans: [],
@@ -764,7 +799,7 @@ export const useStore = create<StoreState>((set, get) => {
     })),
 
     updateLocationCodeSettings: (updates) => set((state) => savePlanInState(state, {
-      locationCodeSettings: { ...state.locationCodeSettings, ...updates },
+      locationCodeSettings: normalizeLocationCodeSettings({ ...state.locationCodeSettings, ...updates }),
     })),
 
     addObject: (obj) => set((state) => {
@@ -780,13 +815,67 @@ export const useStore = create<StoreState>((set, get) => {
       });
     }),
 
+    addRackGroup: (options) => set((state) => {
+      if (!state.hasActivePlan) return state;
+      const count = Math.max(1, Math.floor(Number(options.count) || 1));
+      const rackGroup = normalizeRackGroup(options.rackGroup);
+      const created: WarehouseObject[] = [];
+      let workingObjects = [...state.objects];
+      const baseX = 0.25;
+      const baseZ = 0.25;
+      const spacing = Math.max(options.depth + state.gridSettings.minimumAisleWidth, 1);
+
+      for (let index = 0; index < count; index += 1) {
+        const rackNumber = getNextRackNumber(workingObjects, rackGroup);
+        const rackCode = buildRackCode(rackGroup, rackNumber);
+        const rack = normalizeObject(
+          {
+            type: 'rack',
+            id: generateId(),
+            name: `${rackCode} Rafı`,
+            x: baseX,
+            z: baseZ + index * spacing,
+            rotation: 0,
+            width: options.width,
+            depth: options.depth,
+            height: options.height,
+            color: objectColors.rack,
+            note: options.note,
+            locked: false,
+            visible: true,
+            rackGroup,
+            rackNumber,
+            rackCode,
+            shelfCount: options.shelfCount,
+            binsPerShelf: options.binsPerShelf,
+            orientation: 'horizontal',
+            productGroup: options.productGroup,
+            showDimensions: true,
+          } as Rack,
+          state.warehouseConfig,
+          workingObjects,
+        );
+        workingObjects = [...workingObjects, rack];
+        created.push(rack);
+      }
+
+      return savePlanInState(state, {
+        objects: [...state.objects, ...created],
+        selectedId: created[0]?.id || state.selectedId,
+      });
+    }),
+
     updateObject: (id, updates) => set((state) => {
       const nextObjects = state.objects.map((object) => {
         if (object.id !== id) return object;
         if (object.locked && updates.locked !== false && updates.visible === undefined) return object;
         const updated = { ...object, ...updates } as WarehouseObject;
         if (updated.type === 'rack') {
-          updated.shelves = Math.max(1, Math.floor(Number(updated.shelves || 1)));
+          const identity = ensureUniqueRackIdentity(updated, state.objects);
+          updated.rackGroup = identity.rackGroup;
+          updated.rackNumber = identity.rackNumber;
+          updated.rackCode = identity.rackCode;
+          updated.shelfCount = Math.max(1, Math.floor(Number(updated.shelfCount || 1)));
           updated.binsPerShelf = Math.max(1, Math.floor(Number(updated.binsPerShelf || 1)));
         }
         return clampObjectToWarehouse(updated, state.warehouseConfig, state.gridSettings);
@@ -812,8 +901,10 @@ export const useStore = create<StoreState>((set, get) => {
         locked: false,
       } as WarehouseObject;
       if (copy.type === 'rack') {
-        copy.code = nextRackCode(state.objects);
-        copy.name = `${copy.code} Rafı`;
+        const nextNumber = getNextRackNumber(state.objects, copy.rackGroup);
+        copy.rackNumber = nextNumber;
+        copy.rackCode = buildRackCode(copy.rackGroup, nextNumber);
+        copy.name = `${copy.rackCode} Rafı`;
       }
       const clamped = clampObjectToWarehouse(copy, state.warehouseConfig, state.gridSettings);
       return savePlanInState(state, {

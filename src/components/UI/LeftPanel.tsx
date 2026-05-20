@@ -19,12 +19,15 @@ import {
   Warehouse,
 } from 'lucide-react';
 import { useStore } from '../../store/useStore';
-import { UnitPreference, ViewMode, WarehouseObjectNoId } from '../../types';
+import { ProductGroup, UnitPreference, ViewMode, WarehouseObjectNoId } from '../../types';
 import {
   AISLE_OPTIONS,
   GRID_OPTIONS,
+  buildRackCode,
   displayMeasure,
   fromMeters,
+  getNextRackNumber,
+  normalizeRackGroup,
   toMeters,
 } from '../../utils/warehouse';
 
@@ -38,17 +41,14 @@ function downloadText(filename: string, content: string, type: string) {
   URL.revokeObjectURL(url);
 }
 
-function nextRackCode(objects: ReturnType<typeof useStore.getState>['objects']) {
-  const count = objects.filter((object) => object.type === 'rack').length;
-  return count < 26 ? String.fromCharCode(65 + count) : `R${count + 1}`;
-}
-
 const viewOptions: Array<{ value: ViewMode; label: string }> = [
   { value: '2D', label: '2D Plan' },
   { value: '3D', label: '3D Görünüm' },
   { value: 'ISO', label: 'İzometrik' },
   { value: 'TOP', label: 'Üstten' },
 ];
+
+const productGroups: ProductGroup[] = ['Alüminyum', 'Döküm', 'Karbon Çelik', 'PPR', 'Karışık'];
 
 export function LeftPanel() {
   const warehouseConfig = useStore((state) => state.warehouseConfig);
@@ -60,6 +60,7 @@ export function LeftPanel() {
   const viewMode = useStore((state) => state.viewMode);
   const selectedId = useStore((state) => state.selectedId);
   const addObject = useStore((state) => state.addObject);
+  const addRackGroup = useStore((state) => state.addRackGroup);
   const selectObject = useStore((state) => state.selectObject);
   const setUnitPreference = useStore((state) => state.setUnitPreference);
   const updateWarehouseConfig = useStore((state) => state.updateWarehouseConfig);
@@ -84,6 +85,18 @@ export function LeftPanel() {
     length: String(fromMeters(warehouseConfig.length, unitPreference)),
     height: String(fromMeters(warehouseConfig.height, unitPreference)),
   });
+  const [rackDraft, setRackDraft] = useState({
+    rackGroup: 'A',
+    rackNumber: '1',
+    count: '1',
+    shelfCount: '4',
+    binsPerShelf: '7',
+    width: '1.8',
+    depth: '0.6',
+    height: '1.8',
+    productGroup: 'Karışık' as ProductGroup,
+    note: '',
+  });
 
   useEffect(() => {
     setForm({
@@ -93,6 +106,18 @@ export function LeftPanel() {
       height: String(Number(fromMeters(warehouseConfig.height, unitPreference).toFixed(unitPreference === 'cm' ? 0 : 2))),
     });
   }, [warehouseConfig, unitPreference]);
+
+  const normalizedRackGroup = normalizeRackGroup(rackDraft.rackGroup);
+  const suggestedRackNumber = getNextRackNumber(objects, normalizedRackGroup);
+  const rackPreview = buildRackCode(normalizedRackGroup, Number(rackDraft.rackNumber) || suggestedRackNumber);
+
+  useEffect(() => {
+    setRackDraft((current) => ({
+      ...current,
+      rackGroup: normalizedRackGroup,
+      rackNumber: String(suggestedRackNumber),
+    }));
+  }, [normalizedRackGroup, suggestedRackNumber]);
 
   const layers = useMemo(() => objects.filter((object) => object.visible), [objects]);
 
@@ -121,7 +146,9 @@ export function LeftPanel() {
   };
 
   const add = (type: WarehouseObjectNoId['type']) => {
-    const code = nextRackCode(objects);
+    const rackGroup = normalizeRackGroup(rackDraft.rackGroup);
+    const rackNumber = Number(rackDraft.rackNumber) || getNextRackNumber(objects, rackGroup);
+    const rackCode = buildRackCode(rackGroup, rackNumber);
     const base = {
       name: '',
       x: 0.25,
@@ -140,15 +167,18 @@ export function LeftPanel() {
       addObject({
         ...base,
         type,
-        name: `${code} Rafı`,
-        width: 1.8,
-        depth: 0.6,
-        height: 1.8,
-        code,
-        shelves: 4,
-        binsPerShelf: 7,
+        name: `${rackCode} Rafı`,
+        width: toMeters(Number(rackDraft.width), unitPreference),
+        depth: toMeters(Number(rackDraft.depth), unitPreference),
+        height: toMeters(Number(rackDraft.height), unitPreference),
+        rackGroup,
+        rackNumber,
+        rackCode,
+        shelfCount: Math.max(1, Math.floor(Number(rackDraft.shelfCount) || 4)),
+        binsPerShelf: Math.max(1, Math.floor(Number(rackDraft.binsPerShelf) || 7)),
         orientation: 'horizontal',
-        productGroup: 'Karışık',
+        productGroup: rackDraft.productGroup,
+        note: rackDraft.note,
         showDimensions: true,
       });
       return;
@@ -193,7 +223,6 @@ export function LeftPanel() {
   };
 
   const objectButtons = [
-    { type: 'rack', label: 'Raf', icon: Package },
     { type: 'column', label: 'Kolon', icon: Columns3 },
     { type: 'packing', label: 'Paketleme', icon: Square },
     { type: 'path', label: 'Yürüme Yolu', icon: Route },
@@ -202,6 +231,20 @@ export function LeftPanel() {
     { type: 'receiving', label: 'Mal Kabul', icon: PackageCheck },
     { type: 'safety', label: 'Güvenlik', icon: Shield },
   ] as const;
+
+  const handleCreateRackGroup = () => {
+    addRackGroup({
+      rackGroup: normalizedRackGroup,
+      count: Math.max(1, Math.floor(Number(rackDraft.count) || 1)),
+      shelfCount: Math.max(1, Math.floor(Number(rackDraft.shelfCount) || 4)),
+      binsPerShelf: Math.max(1, Math.floor(Number(rackDraft.binsPerShelf) || 7)),
+      width: toMeters(Number(rackDraft.width), unitPreference),
+      depth: toMeters(Number(rackDraft.depth), unitPreference),
+      height: toMeters(Number(rackDraft.height), unitPreference),
+      productGroup: rackDraft.productGroup,
+      note: rackDraft.note,
+    });
+  };
 
   return (
     <aside className="z-10 flex w-80 shrink-0 flex-col overflow-y-auto border-r border-slate-800 bg-slate-900/95 p-4 text-slate-200">
@@ -276,7 +319,131 @@ export function LeftPanel() {
       </section>
 
       <section className="border-b border-slate-800 py-4">
-        <div className="mb-3 text-[11px] font-black uppercase tracking-widest text-slate-500">Obje Ekle</div>
+        <div className="mb-3 flex items-center gap-2 text-[11px] font-black uppercase tracking-widest text-slate-500">
+          <Package className="h-4 w-4 text-blue-400" />
+          Raf Ekle / Grup Oluştur
+        </div>
+        <div className="space-y-3">
+          <div className="grid grid-cols-3 gap-2">
+            <label>
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Raf grubu</span>
+              <input
+                value={rackDraft.rackGroup}
+                onChange={(event) => setRackDraft((current) => ({ ...current, rackGroup: event.target.value.toUpperCase() }))}
+                className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+              />
+            </label>
+            <label>
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Raf no</span>
+              <input
+                type="number"
+                min="1"
+                value={rackDraft.rackNumber}
+                onChange={(event) => setRackDraft((current) => ({ ...current, rackNumber: event.target.value }))}
+                className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+              />
+            </label>
+            <label>
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Adet</span>
+              <input
+                type="number"
+                min="1"
+                value={rackDraft.count}
+                onChange={(event) => setRackDraft((current) => ({ ...current, count: event.target.value }))}
+                className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+              />
+            </label>
+          </div>
+
+          <div className="border border-blue-900 bg-blue-950/30 px-3 py-2 text-xs text-blue-100">
+            Önerilen sıradaki kod: <strong>{buildRackCode(normalizedRackGroup, suggestedRackNumber)}</strong> · Önizleme:{' '}
+            <strong>{rackPreview}</strong>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <label>
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Kat sayısı</span>
+              <input
+                type="number"
+                min="1"
+                value={rackDraft.shelfCount}
+                onChange={(event) => setRackDraft((current) => ({ ...current, shelfCount: event.target.value }))}
+                className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+              />
+            </label>
+            <label>
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Göz / kat</span>
+              <input
+                type="number"
+                min="1"
+                value={rackDraft.binsPerShelf}
+                onChange={(event) => setRackDraft((current) => ({ ...current, binsPerShelf: event.target.value }))}
+                className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+              />
+            </label>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            {(['width', 'depth', 'height'] as const).map((field) => (
+              <label key={field}>
+                <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                  {field === 'width' ? 'Genişlik' : field === 'depth' ? 'Derinlik' : 'Yükseklik'} ({unitPreference})
+                </span>
+                <input
+                  type="number"
+                  min="0"
+                  step={unitPreference === 'cm' ? '1' : '0.1'}
+                  value={rackDraft[field]}
+                  onChange={(event) => setRackDraft((current) => ({ ...current, [field]: event.target.value }))}
+                  className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+                />
+              </label>
+            ))}
+          </div>
+
+          <label>
+            <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Ürün grubu</span>
+            <select
+              value={rackDraft.productGroup}
+              onChange={(event) => setRackDraft((current) => ({ ...current, productGroup: event.target.value as ProductGroup }))}
+              className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+            >
+              {productGroups.map((group) => (
+                <option key={group} value={group}>
+                  {group}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Açıklama</span>
+            <input
+              value={rackDraft.note}
+              onChange={(event) => setRackDraft((current) => ({ ...current, note: event.target.value }))}
+              className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+            />
+          </label>
+
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => add('rack')}
+              className="bg-blue-600 px-3 py-2 text-xs font-black uppercase tracking-wider text-white hover:bg-blue-500"
+            >
+              Tek Raf Ekle
+            </button>
+            <button
+              onClick={handleCreateRackGroup}
+              className="border border-blue-700 bg-slate-800 px-3 py-2 text-xs font-black uppercase tracking-wider text-blue-100 hover:bg-slate-700"
+            >
+              Grup Oluştur
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="border-b border-slate-800 py-4">
+        <div className="mb-3 text-[11px] font-black uppercase tracking-widest text-slate-500">Diğer Objeler</div>
         <div className="grid grid-cols-2 gap-2">
           {objectButtons.map(({ type, label, icon: Icon }) => (
             <button
@@ -446,7 +613,7 @@ export function LeftPanel() {
               }`}
             >
               <span className="truncate font-semibold">
-                {object.type === 'rack' ? `Raf ${object.code}` : object.name}
+                {object.type === 'rack' ? `Raf ${object.rackCode}` : object.name}
               </span>
               <span className="ml-2 shrink-0 font-mono text-[10px] text-slate-500">
                 {displayMeasure(object.width, 'm', 2)} x {displayMeasure(object.depth, 'm', 2)}

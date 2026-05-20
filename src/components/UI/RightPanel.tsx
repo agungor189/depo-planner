@@ -11,20 +11,22 @@ import {
 import { useStore } from '../../store/useStore';
 import { LocationFormat, ProductGroup, WarehouseObject } from '../../types';
 import {
+  buildRackCode,
   displayMeasure,
   fromMeters,
   getFootprint,
   getObjectLabel,
+  normalizeRackGroup,
   toMeters,
 } from '../../utils/warehouse';
 
 const productGroups: ProductGroup[] = ['Alüminyum', 'Döküm', 'Karbon Çelik', 'PPR', 'Karışık'];
 
 const locationFormats: Array<{ value: LocationFormat; label: string }> = [
-  { value: 'standard', label: 'A-1-P1' },
-  { value: 'padded', label: 'A-01-P01' },
-  { value: 'verbose', label: 'RAF-A-KAT-1-P1' },
-  { value: 'slash', label: 'A/L1/B01' },
+  { value: 'standard', label: 'A1-K1-P1' },
+  { value: 'padded', label: 'A1-K01-P01' },
+  { value: 'verbose', label: 'RAF-A1-KAT-1-P1' },
+  { value: 'slash', label: 'A1/K1/P01' },
 ];
 
 const labelSizes = ['40x10 mm', '50x20 mm', '80x30 mm', '100x100 mm'];
@@ -67,12 +69,18 @@ export function RightPanel() {
       : labelMode === 'single'
         ? locations.slice(0, 1)
         : locations.slice(0, 24);
+  const faceRows =
+    obj.type === 'rack'
+      ? Array.from({ length: obj.shelfCount }, (_, index) => obj.shelfCount - index).map((shelfNumber) =>
+          locations.filter((location) => location.shelfNumber === shelfNumber),
+        )
+      : [];
 
   const handleChange = (updates: Record<string, unknown>) => {
     updateObject(obj.id, updates as Partial<WarehouseObject>);
   };
 
-  const setNumber = (field: keyof WarehouseObject, rawValue: string, dimension = true) => {
+  const setNumber = (field: string, rawValue: string, dimension = true) => {
     const numeric = Number(rawValue);
     if (!Number.isFinite(numeric)) return;
     handleChange({ [field]: dimension ? toMeters(numeric, unitPreference) : numeric });
@@ -170,15 +178,39 @@ export function RightPanel() {
         <section className="space-y-3 border-b border-slate-800 py-4">
           <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Raf Sistemi</div>
           <div className="grid grid-cols-2 gap-2">
-            <TextInput label="Raf kodu" value={obj.code} onChange={(value) => handleChange({ code: value.toUpperCase() })} />
+            <TextInput
+              label="Raf grubu"
+              value={obj.rackGroup}
+              onChange={(value) => {
+                const rackGroup = normalizeRackGroup(value);
+                handleChange({
+                  rackGroup,
+                  rackCode: buildRackCode(rackGroup, obj.rackNumber),
+                });
+              }}
+            />
+            <NumberInput
+              label="Grup içi raf no"
+              value={obj.rackNumber}
+              onChange={(value) => {
+                const rackNumber = Math.max(1, Math.floor(Number(value) || 1));
+                handleChange({
+                  rackNumber,
+                  rackCode: buildRackCode(obj.rackGroup, rackNumber),
+                });
+              }}
+            />
+            <div className="col-span-2 border border-blue-900 bg-blue-950/30 p-3 text-xs text-blue-100">
+              Otomatik raf kodu: <strong>{obj.rackCode}</strong>
+            </div>
             <SelectInput
               label="Ürün grubu"
               value={obj.productGroup}
               options={productGroups}
               onChange={(value) => handleChange({ productGroup: value as ProductGroup })}
             />
-            <NumberInput label="Kat sayısı" value={obj.shelves} onChange={(value) => setNumber('shelves' as keyof WarehouseObject, value, false)} />
-            <NumberInput label="Göz / kat" value={obj.binsPerShelf} onChange={(value) => setNumber('binsPerShelf' as keyof WarehouseObject, value, false)} />
+            <NumberInput label="Kat sayısı" value={obj.shelfCount} onChange={(value) => setNumber('shelfCount', value, false)} />
+            <NumberInput label="Göz / kat" value={obj.binsPerShelf} onChange={(value) => setNumber('binsPerShelf', value, false)} />
             <SelectInput
               label="Başlangıç yönü"
               value={obj.orientation}
@@ -196,6 +228,30 @@ export function RightPanel() {
             Toplam lokasyon: <strong>{locations.length}</strong> · Raf ölçüsü:{' '}
             {displayMeasure(obj.width, unitPreference)} x {displayMeasure(obj.depth, unitPreference)} x{' '}
             {displayMeasure(obj.height, unitPreference)}
+          </div>
+        </section>
+      )}
+
+      {obj.type === 'rack' && (
+        <section className="space-y-3 border-b border-slate-800 py-4">
+          <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">
+            {obj.rackCode} - Raf Cephe Görünümü
+          </div>
+          <div className="overflow-x-auto border border-slate-800 bg-slate-950 p-2">
+            <div className="min-w-max space-y-1">
+              {faceRows.map((row, rowIndex) => (
+                <div key={rowIndex} className="grid gap-1" style={{ gridTemplateColumns: `repeat(${Math.max(row.length, 1)}, minmax(86px, 1fr))` }}>
+                  {row.map((location) => (
+                    <div
+                      key={location.locationCode}
+                      className="border border-slate-700 bg-slate-900 px-2 py-2 text-center font-mono text-[10px] text-blue-200"
+                    >
+                      {location.locationCode}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
           </div>
         </section>
       )}

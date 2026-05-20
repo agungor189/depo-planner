@@ -35,7 +35,7 @@ export function RackModel({ obj }: { obj: Rack }) {
         outlineWidth={0.02}
         outlineColor="#000000"
       >
-        {obj.code}
+        {obj.rackCode}
       </Text>
     </group>
   );

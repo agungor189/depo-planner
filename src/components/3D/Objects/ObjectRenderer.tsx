@@ -117,7 +117,7 @@ function RackVisual({ rack, selected }: { rack: Rack; selected: boolean }) {
   const gridSettings = useStore((state) => state.gridSettings);
   const unitPreference = useStore((state) => state.unitPreference);
   const topLike = viewMode === '2D' || viewMode === 'TOP';
-  const shelfLines = Array.from({ length: Math.max(rack.shelves - 1, 0) }, (_, index) => index + 1);
+  const shelfLines = Array.from({ length: Math.max(rack.shelfCount - 1, 0) }, (_, index) => index + 1);
   const binLines = Array.from({ length: Math.max(rack.binsPerShelf - 1, 0) }, (_, index) => index + 1);
 
   return (
@@ -139,7 +139,7 @@ function RackVisual({ rack, selected }: { rack: Rack; selected: boolean }) {
 
       {!topLike &&
         shelfLines.map((line) => (
-          <mesh key={`shelf-${line}`} position={[0, (rack.height / rack.shelves) * line, 0]}>
+          <mesh key={`shelf-${line}`} position={[0, (rack.height / rack.shelfCount) * line, 0]}>
             <boxGeometry args={[rack.width + 0.03, 0.025, rack.depth + 0.04]} />
             <meshBasicMaterial color="#dbeafe" transparent opacity={0.7} />
           </mesh>
@@ -216,7 +216,7 @@ export function ObjectRenderer({ obj }: { obj: WarehouseObject }) {
 
   if (!obj.visible) return null;
 
-  const label = obj.type === 'rack' ? obj.code : obj.type === 'note' ? obj.text : getObjectLabel(obj);
+  const label = obj.type === 'rack' ? obj.rackCode : obj.type === 'note' ? obj.text : getObjectLabel(obj);
 
   return (
     <ObjectWrapper obj={obj} label={label}>
