@@ -7,6 +7,7 @@ export function BottomBar() {
   const warehouseConfig = useStore((state) => state.warehouseConfig);
   const warnings = useStore((state) => state.warnings);
   const saveStatus = useStore((state) => state.saveStatus);
+  const sharedSyncStatus = useStore((state) => state.sharedSyncStatus);
   const selectedId = useStore((state) => state.selectedId);
   const usage = calculateAreaUsage(objects, warehouseConfig);
   const selected = objects.find((object) => object.id === selectedId);
@@ -19,6 +20,7 @@ export function BottomBar() {
           <Save className="h-3.5 w-3.5" />
           {saveStatus}
         </span>
+        <span className="hidden text-blue-200 sm:inline">{sharedSyncStatus}</span>
         <span className="hidden sm:inline">
           Depo: {trimNumber(warehouseConfig.width)} m x {trimNumber(warehouseConfig.length)} m x {trimNumber(warehouseConfig.height)} m
         </span>

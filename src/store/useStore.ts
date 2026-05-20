@@ -39,6 +39,7 @@ import {
 
 const STORAGE_KEY = 'dsdst-warehouse-planner-v2';
 const LEGACY_STORAGE_KEY = 'dsdst-warehouse-data';
+const SHARED_STATE_ENDPOINT = '/api/warehouse-state';
 
 interface PersistedData {
   activePlanId: string | null;
@@ -60,7 +61,9 @@ interface StoreState {
   hasActivePlan: boolean;
   warnings: LayoutWarning[];
   saveStatus: string;
+  sharedSyncStatus: string;
 
+  loadSharedState: () => Promise<void>;
   createEmptyPlan: (config: WarehouseConfig, unitPreference: UnitPreference) => void;
   loadSamplePlan: () => void;
   resetPlan: () => void;
@@ -127,8 +130,58 @@ function planSummaries(plans: WarehousePlan[]): PlanSummary[] {
   }));
 }
 
-function persist(data: PersistedData) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+let sharedSaveTimer: number | undefined;
+let pendingSharedData: PersistedData | null = null;
+let sharedStatusListener: ((status: string) => void) | null = null;
+
+function safeLocalStorageGet(key: string) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeLocalStorageSet(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (error) {
+    console.warn('Yerel kayıt yazılamadı', error);
+  }
+}
+
+async function writeSharedData(data: PersistedData) {
+  const response = await fetch(SHARED_STATE_ENDPOINT, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Ortak kayıt başarısız: ${response.status}`);
+  }
+}
+
+function scheduleSharedPersist(data: PersistedData) {
+  if (typeof window === 'undefined' || typeof fetch === 'undefined') return;
+  pendingSharedData = data;
+  window.clearTimeout(sharedSaveTimer);
+  sharedSaveTimer = window.setTimeout(() => {
+    const current = pendingSharedData;
+    pendingSharedData = null;
+    if (!current) return;
+    writeSharedData(current)
+      .then(() => sharedStatusListener?.('Ortak kayıt güncel'))
+      .catch((error) => {
+        console.warn('Ortak depo planı kaydedilemedi', error);
+        sharedStatusListener?.('Ortak kayıt hatası');
+      });
+  }, 300);
+}
+
+function persist(data: PersistedData, syncShared = true) {
+  safeLocalStorageSet(STORAGE_KEY, JSON.stringify(data));
+  if (syncShared) scheduleSharedPersist(data);
 }
 
 function normalizeWarehouseConfig(raw?: Partial<WarehouseConfig>): WarehouseConfig {
@@ -503,7 +556,7 @@ function migratePlan(raw: any): WarehousePlan | null {
 }
 
 function loadPersistedData(): PersistedData {
-  const saved = localStorage.getItem(STORAGE_KEY);
+  const saved = safeLocalStorageGet(STORAGE_KEY);
   if (saved) {
     try {
       const parsed = JSON.parse(saved);
@@ -519,7 +572,7 @@ function loadPersistedData(): PersistedData {
     }
   }
 
-  const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
+  const legacy = safeLocalStorageGet(LEGACY_STORAGE_KEY);
   if (legacy) {
     try {
       const migrated = migratePlan(JSON.parse(legacy));
@@ -532,8 +585,66 @@ function loadPersistedData(): PersistedData {
   return { activePlanId: null, plans: [] };
 }
 
+async function fetchSharedData(): Promise<PersistedData | null> {
+  if (typeof fetch === 'undefined') return null;
+
+  const response = await fetch(SHARED_STATE_ENDPOINT, { cache: 'no-store' });
+  if (!response.ok) return null;
+
+  const parsed = await response.json();
+  const plans = Array.isArray(parsed.plans)
+    ? parsed.plans.map(migratePlan).filter(Boolean) as WarehousePlan[]
+    : [];
+
+  return {
+    activePlanId: parsed.activePlanId || plans[0]?.id || null,
+    plans,
+  };
+}
+
 function getActivePlan(data: PersistedData): WarehousePlan | null {
   return data.plans.find((plan) => plan.id === data.activePlanId) || data.plans[0] || null;
+}
+
+function stateFromPlan(
+  plan: WarehousePlan | null,
+  plans: WarehousePlan[],
+  saveStatus: string,
+  sharedSyncStatus: string,
+): Partial<StoreState> {
+  if (!plan) {
+    return {
+      warehouseConfig: DEFAULT_WAREHOUSE_CONFIG,
+      warehouse: DEFAULT_WAREHOUSE_CONFIG,
+      unitPreference: 'm',
+      gridSettings: DEFAULT_GRID_SETTINGS,
+      locationCodeSettings: normalizeLocationCodeSettings(),
+      objects: [],
+      selectedId: null,
+      plans: planSummaries(plans),
+      activePlanId: null,
+      hasActivePlan: false,
+      warnings: [],
+      saveStatus,
+      sharedSyncStatus,
+    };
+  }
+
+  return {
+    warehouseConfig: plan.warehouseConfig,
+    warehouse: plan.warehouseConfig,
+    unitPreference: plan.unitPreference,
+    gridSettings: plan.gridSettings,
+    locationCodeSettings: normalizeLocationCodeSettings(plan.locationCodeSettings),
+    objects: plan.objects,
+    selectedId: null,
+    plans: planSummaries(plans),
+    activePlanId: plan.id,
+    hasActivePlan: true,
+    warnings: validateObjects(plan.objects, plan.warehouseConfig, plan.gridSettings),
+    saveStatus,
+    sharedSyncStatus,
+  };
 }
 
 function savePlanInState(state: StoreState, patch: Partial<StoreState>): Partial<StoreState> {
@@ -577,6 +688,7 @@ function savePlanInState(state: StoreState, patch: Partial<StoreState>): Partial
     warnings,
     plans: planSummaries(nextFullPlans),
     saveStatus: `Kaydedildi ${new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}`,
+    sharedSyncStatus: 'Ortak kayda yazılıyor',
     hasActivePlan: true,
     activePlanId,
   };
@@ -597,6 +709,8 @@ cacheFullPlans(persistedData.plans);
 const activePlan = getActivePlan(persistedData);
 
 export const useStore = create<StoreState>((set, get) => {
+  sharedStatusListener = (sharedSyncStatus) => set({ sharedSyncStatus });
+
   const initialWarehouseConfig = activePlan?.warehouseConfig || DEFAULT_WAREHOUSE_CONFIG;
   const initialGridSettings = activePlan?.gridSettings || DEFAULT_GRID_SETTINGS;
   const initialWarnings = activePlan
@@ -618,6 +732,34 @@ export const useStore = create<StoreState>((set, get) => {
     hasActivePlan: Boolean(activePlan),
     warnings: initialWarnings,
     saveStatus: activePlan ? 'Kaydedildi' : 'Plan bekleniyor',
+    sharedSyncStatus: activePlan ? 'Yerel kayıt yüklendi' : 'Ortak kayıt bekleniyor',
+
+    loadSharedState: async () => {
+      set({ sharedSyncStatus: 'Ortak kayıt okunuyor...' });
+      try {
+        const sharedData = await fetchSharedData();
+        if (sharedData?.plans.length) {
+          const plan = getActivePlan(sharedData);
+          cacheFullPlans(sharedData.plans);
+          persist(sharedData, false);
+          set(stateFromPlan(plan, sharedData.plans, 'Ortak kayıt yüklendi', 'Ortak kayıt aktif'));
+          return;
+        }
+
+        const localPlans = getFullPlans();
+        if (localPlans.length) {
+          const activePlanId = get().activePlanId || localPlans[0].id;
+          await writeSharedData({ activePlanId, plans: localPlans });
+          set({ sharedSyncStatus: 'Yerel plan ortak kayda aktarıldı' });
+          return;
+        }
+
+        set({ sharedSyncStatus: 'Ortak kayıt boş' });
+      } catch (error) {
+        console.warn('Ortak depo planı okunamadı', error);
+        set({ sharedSyncStatus: 'Ortak kayıt yok, yerel kayıt kullanılıyor' });
+      }
+    },
 
     createEmptyPlan: (config, unitPreference) => set(() => {
       const warehouseConfig = normalizeWarehouseConfig(config);
@@ -638,6 +780,7 @@ export const useStore = create<StoreState>((set, get) => {
         hasActivePlan: true,
         warnings: [],
         saveStatus: 'Boş depo oluşturuldu',
+        sharedSyncStatus: 'Ortak kayda yazılıyor',
       };
     }),
 
@@ -661,6 +804,7 @@ export const useStore = create<StoreState>((set, get) => {
         hasActivePlan: true,
         warnings: validateObjects(objects, warehouseConfig, plan.gridSettings),
         saveStatus: 'Örnek plan yüklendi',
+        sharedSyncStatus: 'Ortak kayda yazılıyor',
       };
     }),
 
@@ -670,7 +814,7 @@ export const useStore = create<StoreState>((set, get) => {
         objects: [],
         selectedId: null,
       });
-      return { ...next, saveStatus: 'Plan sıfırlandı' };
+      return { ...next, saveStatus: 'Plan sıfırlandı', sharedSyncStatus: 'Ortak kayda yazılıyor' };
     }),
 
     duplicatePlan: () => set((state) => {
@@ -702,6 +846,7 @@ export const useStore = create<StoreState>((set, get) => {
         hasActivePlan: true,
         warnings: validateObjects(copy.objects, copy.warehouseConfig, copy.gridSettings),
         saveStatus: 'Plan kopyalandı',
+        sharedSyncStatus: 'Ortak kayda yazılıyor',
       };
     }),
 
@@ -724,6 +869,7 @@ export const useStore = create<StoreState>((set, get) => {
           hasActivePlan: false,
           warnings: [],
           saveStatus: 'Plan silindi',
+          sharedSyncStatus: 'Ortak kayda yazılıyor',
         };
       }
       return {
@@ -739,6 +885,7 @@ export const useStore = create<StoreState>((set, get) => {
         hasActivePlan: true,
         warnings: validateObjects(nextActive.objects, nextActive.warehouseConfig, nextActive.gridSettings),
         saveStatus: 'Plan silindi',
+        sharedSyncStatus: 'Ortak kayda yazılıyor',
       };
     }),
 
@@ -758,6 +905,7 @@ export const useStore = create<StoreState>((set, get) => {
         hasActivePlan: true,
         warnings: validateObjects(plan.objects, plan.warehouseConfig, plan.gridSettings),
         saveStatus: 'Plan değiştirildi',
+        sharedSyncStatus: 'Ortak kayıt aktif',
       };
     }),
 
@@ -957,6 +1105,7 @@ export const useStore = create<StoreState>((set, get) => {
           hasActivePlan: true,
           warnings: validateObjects(plan.objects, plan.warehouseConfig, plan.gridSettings),
           saveStatus: 'JSON içe aktarıldı',
+          sharedSyncStatus: 'Ortak kayda yazılıyor',
         });
         return true;
       } catch (error) {

@@ -4,7 +4,7 @@ import { Text, TransformControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../../../store/useStore';
 import { Rack, WarehouseObject } from '../../../types';
-import { displayMeasure, getFootprint, getObjectLabel } from '../../../utils/warehouse';
+import { clampObjectToWarehouse, displayMeasure, getFootprint, getObjectLabel } from '../../../utils/warehouse';
 
 function planToScene(
   obj: WarehouseObject,
@@ -46,6 +46,7 @@ function ObjectWrapper({
   const setSelectedId = useStore((state) => state.setSelectedId);
   const viewMode = useStore((state) => state.viewMode);
   const warehouseConfig = useStore((state) => state.warehouseConfig);
+  const gridSettings = useStore((state) => state.gridSettings);
   const groupRef = useRef<THREE.Group>(null);
   const topLike = viewMode === '2D' || viewMode === 'TOP';
   const isSelected = selectedId === obj.id;
@@ -58,14 +59,30 @@ function ObjectWrapper({
 
   const commitTransform = () => {
     if (!groupRef.current) return;
+    constrainTransform();
     const next = sceneToPlan(obj, warehouseConfig.width, warehouseConfig.length, groupRef.current.position);
     updateObject(obj.id, next);
+  };
+
+  const constrainTransform = () => {
+    if (!groupRef.current) return;
+    const next = sceneToPlan(obj, warehouseConfig.width, warehouseConfig.length, groupRef.current.position);
+    const clamped = clampObjectToWarehouse({ ...obj, ...next }, warehouseConfig, gridSettings);
+    const [x, y, z] = planToScene(clamped, warehouseConfig.width, warehouseConfig.length);
+    groupRef.current.position.set(x, y, z);
   };
 
   return (
     <>
       {isSelected && !obj.locked && (
-        <TransformControls object={groupRef} mode="translate" showY={false} onMouseUp={commitTransform} />
+        <TransformControls
+          object={groupRef}
+          mode="translate"
+          showY={false}
+          translationSnap={gridSettings.snap ? gridSettings.snapSize : undefined}
+          onObjectChange={constrainTransform}
+          onMouseUp={commitTransform}
+        />
       )}
 
       <group
