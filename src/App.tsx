@@ -4,22 +4,10 @@ import { RightPanel } from './components/UI/RightPanel';
 import { BottomBar } from './components/UI/BottomBar';
 import { Scene } from './components/3D/Scene';
 import { useStore } from './store/useStore';
-import { useEffect } from 'react';
+import { StartScreen } from './components/UI/StartScreen';
 
 export default function App() {
-  const loadInitialData = useStore((state) => state.loadInitialData);
-  const objects = useStore((state) => state.objects);
-
-  useEffect(() => {
-    // If no objects and nothing in localstorage, maybe load initial data
-    if (objects.length === 0) {
-      // It might be empty because of clear check if it was truly first load
-      const saved = localStorage.getItem('dsdst-warehouse-data');
-      if (!saved) {
-         loadInitialData();
-      }
-    }
-  }, [loadInitialData, objects.length]);
+  const hasActivePlan = useStore((state) => state.hasActivePlan);
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-slate-950 font-sans text-slate-200">
@@ -34,6 +22,7 @@ export default function App() {
         <RightPanel />
       </div>
       <BottomBar />
+      {!hasActivePlan && <StartScreen />}
     </div>
   );
 }

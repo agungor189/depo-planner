@@ -1,121 +1,235 @@
-import { useRef } from 'react';
-import { useStore } from '../../../store/useStore';
-import { TransformControls, Text, Box } from '@react-three/drei';
+import { ReactNode, useMemo, useRef } from 'react';
+import { ThreeEvent } from '@react-three/fiber';
+import { Text, TransformControls } from '@react-three/drei';
 import * as THREE from 'three';
+import { useStore } from '../../../store/useStore';
+import { Rack, WarehouseObject } from '../../../types';
+import { displayMeasure, getFootprint, getObjectLabel } from '../../../utils/warehouse';
 
-export function ObjectWrapper({ obj, children, color, label }: any) {
+function planToScene(
+  obj: WarehouseObject,
+  warehouseWidth: number,
+  warehouseLength: number,
+): [number, number, number] {
+  const footprint = getFootprint(obj);
+  return [obj.x + footprint.width / 2 - warehouseWidth / 2, 0, obj.z + footprint.depth / 2 - warehouseLength / 2];
+}
+
+function sceneToPlan(
+  obj: WarehouseObject,
+  warehouseWidth: number,
+  warehouseLength: number,
+  position: THREE.Vector3,
+) {
+  const footprint = getFootprint(obj);
+  return {
+    x: position.x + warehouseWidth / 2 - footprint.width / 2,
+    z: position.z + warehouseLength / 2 - footprint.depth / 2,
+  };
+}
+
+function labelRotation(topLike: boolean): [number, number, number] {
+  return topLike ? [-Math.PI / 2, 0, 0] : [0, 0, 0];
+}
+
+function ObjectWrapper({
+  obj,
+  label,
+  children,
+}: {
+  obj: WarehouseObject;
+  label: string;
+  children: ReactNode;
+}) {
   const selectedId = useStore((state) => state.selectedId);
   const updateObject = useStore((state) => state.updateObject);
   const setSelectedId = useStore((state) => state.setSelectedId);
   const viewMode = useStore((state) => state.viewMode);
-
-  const isSelected = selectedId === obj.id;
+  const warehouseConfig = useStore((state) => state.warehouseConfig);
   const groupRef = useRef<THREE.Group>(null);
+  const topLike = viewMode === '2D' || viewMode === 'TOP';
+  const isSelected = selectedId === obj.id;
+  const position = planToScene(obj, warehouseConfig.width, warehouseConfig.length);
 
-  const handlePointerDown = (e: any) => {
-    e.stopPropagation();
+  const handlePointerDown = (event: ThreeEvent<PointerEvent>) => {
+    event.stopPropagation();
     setSelectedId(obj.id);
   };
 
-  const handleTransformChange = (e: any) => {
+  const commitTransform = () => {
     if (!groupRef.current) return;
-    const pos = groupRef.current.position;
-    const rot = groupRef.current.rotation;
-    // Debounce or update on mouse up preferred, but let's update raw
-    // To avoid lag, we might only update store on mouseUp, but let's just do it on change with a small throttle or on dragging-changed.
+    const next = sceneToPlan(obj, warehouseConfig.width, warehouseConfig.length, groupRef.current.position);
+    updateObject(obj.id, next);
   };
-
-  const content = (
-    <group
-      ref={groupRef}
-      position={[obj.x, 0, obj.z]}
-      rotation={[0, obj.rotation, 0]}
-      onClick={handlePointerDown}
-      onPointerMissed={(e) => {
-        if (e.type === 'click' && isSelected) {
-          // setSelectedId(null) // handled in Scene normally
-        }
-      }}
-    >
-      <mesh position={[0, obj.height / 2, 0]} castShadow receiveShadow>
-        <boxGeometry args={[obj.width, obj.height, obj.depth]} />
-        <meshStandardMaterial color={isSelected ? '#60a5fa' : color} transparent opacity={obj.type === 'path' ? 0.3 : 1} />
-      </mesh>
-
-      {/* Wireframe for racks to simulate shelves */}
-      {obj.type === 'rack' && (
-        <mesh position={[0, obj.height / 2, 0]}>
-           <boxGeometry args={[obj.width + 0.01, obj.height + 0.01, obj.depth + 0.01]} />
-           <meshBasicMaterial color="#0f172a" wireframe />
-        </mesh>
-      )}
-
-      {label && (
-        <Text
-          position={[0, obj.height + 0.3, 0]}
-          color="#ffffff"
-          fontSize={0.4}
-          anchorX="center"
-          anchorY="middle"
-          outlineWidth={0.02}
-          outlineColor="#000000"
-          rotation={viewMode === 'Top' ? [-Math.PI / 2, 0, 0] : [0, 0, 0]}
-        >
-          {label}
-        </Text>
-      )}
-    </group>
-  );
 
   return (
     <>
-      {isSelected && viewMode === '3D' ? (
-        <TransformControls
-          object={groupRef}
-          mode="translate"
-          onMouseUp={(e) => {
-            if (groupRef.current) {
-               updateObject(obj.id, {
-                 x: Math.round(groupRef.current.position.x * 10) / 10,
-                 z: Math.round(groupRef.current.position.z * 10) / 10
-               });
-            }
-          }}
-          showY={false}
-        />
-      ) : null}
-      
-      {isSelected && viewMode === 'Top' ? (
-        <TransformControls
-          object={groupRef}
-          mode="translate"
-          showY={false}
-          onMouseUp={(e) => {
-            if (groupRef.current) {
-               updateObject(obj.id, {
-                 x: Math.round(groupRef.current.position.x * 10) / 10,
-                 z: Math.round(groupRef.current.position.z * 10) / 10
-               });
-            }
-          }}
-        />
-      ) : null}
-      {content}
+      {isSelected && !obj.locked && (
+        <TransformControls object={groupRef} mode="translate" showY={false} onMouseUp={commitTransform} />
+      )}
+
+      <group
+        ref={groupRef}
+        position={position}
+        rotation={[0, obj.rotation, 0]}
+        onPointerDown={handlePointerDown}
+      >
+        {children}
+        <Text
+          position={[0, topLike ? 0.12 : Math.max(obj.height, 0.08) + 0.24, 0]}
+          rotation={labelRotation(topLike)}
+          color="#f8fafc"
+          fontSize={topLike ? 0.18 : 0.28}
+          anchorX="center"
+          anchorY="middle"
+          outlineWidth={0.012}
+          outlineColor="#020617"
+        >
+          {label}
+        </Text>
+      </group>
     </>
   );
 }
 
-export function ObjectRenderer({ obj }: { obj: any }) {
-  switch (obj.type) {
-    case 'rack':
-      return <ObjectWrapper obj={obj} color="#1e3a8a" label={obj.code} />;
-    case 'column':
-      return <ObjectWrapper obj={obj} color="#475569" />;
-    case 'packing':
-      return <ObjectWrapper obj={obj} color="#b45309" label="Paketleme" />;
-    case 'path':
-      return <ObjectWrapper obj={obj} color="#94a3b8" label="Yol" />;
-    default:
-      return null;
-  }
+function BasicBlock({ obj, selected }: { obj: WarehouseObject; selected: boolean }) {
+  const viewMode = useStore((state) => state.viewMode);
+  const topLike = viewMode === '2D' || viewMode === 'TOP';
+  const visualHeight = topLike ? Math.max(0.04, Math.min(obj.height, 0.12)) : obj.height;
+  const opacity = obj.type === 'path' || obj.type === 'safety' || obj.type === 'door' ? 0.45 : 0.9;
+
+  return (
+    <mesh position={[0, visualHeight / 2, 0]} castShadow receiveShadow>
+      <boxGeometry args={[obj.width, visualHeight, obj.depth]} />
+      <meshStandardMaterial
+        color={selected ? '#60a5fa' : obj.color}
+        transparent
+        opacity={opacity}
+        roughness={0.72}
+        metalness={0.08}
+      />
+    </mesh>
+  );
+}
+
+function RackVisual({ rack, selected }: { rack: Rack; selected: boolean }) {
+  const viewMode = useStore((state) => state.viewMode);
+  const gridSettings = useStore((state) => state.gridSettings);
+  const unitPreference = useStore((state) => state.unitPreference);
+  const topLike = viewMode === '2D' || viewMode === 'TOP';
+  const shelfLines = Array.from({ length: Math.max(rack.shelves - 1, 0) }, (_, index) => index + 1);
+  const binLines = Array.from({ length: Math.max(rack.binsPerShelf - 1, 0) }, (_, index) => index + 1);
+
+  return (
+    <group>
+      <mesh position={[0, (topLike ? 0.09 : rack.height) / 2, 0]} castShadow receiveShadow>
+        <boxGeometry args={[rack.width, topLike ? 0.09 : rack.height, rack.depth]} />
+        <meshStandardMaterial
+          color={selected ? '#60a5fa' : rack.color}
+          transparent
+          opacity={topLike ? 0.78 : 0.86}
+          roughness={0.65}
+          metalness={0.12}
+        />
+      </mesh>
+      <mesh position={[0, (topLike ? 0.09 : rack.height) / 2 + 0.002, 0]}>
+        <boxGeometry args={[rack.width + 0.02, (topLike ? 0.1 : rack.height) + 0.02, rack.depth + 0.02]} />
+        <meshBasicMaterial color={selected ? '#bfdbfe' : '#0f172a'} wireframe />
+      </mesh>
+
+      {!topLike &&
+        shelfLines.map((line) => (
+          <mesh key={`shelf-${line}`} position={[0, (rack.height / rack.shelves) * line, 0]}>
+            <boxGeometry args={[rack.width + 0.03, 0.025, rack.depth + 0.04]} />
+            <meshBasicMaterial color="#dbeafe" transparent opacity={0.7} />
+          </mesh>
+        ))}
+
+      {binLines.map((line) => (
+        <mesh
+          key={`bin-${line}`}
+          position={[-rack.width / 2 + (rack.width / rack.binsPerShelf) * line, topLike ? 0.11 : rack.height / 2, 0]}
+        >
+          <boxGeometry args={[0.018, topLike ? 0.035 : rack.height + 0.02, rack.depth + 0.05]} />
+          <meshBasicMaterial color="#dbeafe" transparent opacity={0.75} />
+        </mesh>
+      ))}
+
+      {gridSettings.showAccessZones && !topLike && (
+        <mesh position={[0, 0.025, rack.depth / 2 + gridSettings.minimumAisleWidth / 2]}>
+          <boxGeometry args={[rack.width, 0.04, gridSettings.minimumAisleWidth]} />
+          <meshBasicMaterial color="#38bdf8" transparent opacity={0.16} />
+        </mesh>
+      )}
+
+      {rack.showDimensions && (
+        <Text
+          position={[0, topLike ? 0.13 : rack.height + 0.55, rack.depth / 2 + 0.1]}
+          rotation={labelRotation(topLike)}
+          color="#bfdbfe"
+          fontSize={topLike ? 0.12 : 0.16}
+          anchorX="center"
+          anchorY="middle"
+          outlineWidth={0.006}
+          outlineColor="#020617"
+        >
+          {displayMeasure(rack.width, unitPreference)} x {displayMeasure(rack.depth, unitPreference)} x{' '}
+          {displayMeasure(rack.height, unitPreference)}
+        </Text>
+      )}
+    </group>
+  );
+}
+
+function PathStripes({ obj }: { obj: WarehouseObject }) {
+  const count = Math.max(2, Math.floor(obj.width / 0.35));
+  return (
+    <group>
+      {Array.from({ length: count }, (_, index) => (
+        <mesh key={index} position={[-obj.width / 2 + (index + 0.5) * (obj.width / count), 0.075, 0]}>
+          <boxGeometry args={[0.04, 0.025, obj.depth * 1.1]} />
+          <meshBasicMaterial color="#e2e8f0" transparent opacity={0.45} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function DoorMarker({ obj }: { obj: WarehouseObject }) {
+  return (
+    <group>
+      <mesh position={[0, 0.08, 0]}>
+        <boxGeometry args={[obj.width, 0.08, obj.depth]} />
+        <meshBasicMaterial color="#020617" transparent opacity={0.75} />
+      </mesh>
+      <mesh position={[0, obj.height / 2, 0]}>
+        <boxGeometry args={[obj.width, obj.height, 0.035]} />
+        <meshBasicMaterial color="#38bdf8" transparent opacity={0.32} />
+      </mesh>
+    </group>
+  );
+}
+
+export function ObjectRenderer({ obj }: { obj: WarehouseObject }) {
+  const selectedId = useStore((state) => state.selectedId);
+  const selected = selectedId === obj.id;
+
+  if (!obj.visible) return null;
+
+  const label = obj.type === 'rack' ? obj.code : obj.type === 'note' ? obj.text : getObjectLabel(obj);
+
+  return (
+    <ObjectWrapper obj={obj} label={label}>
+      {obj.type === 'rack' ? <RackVisual rack={obj} selected={selected} /> : null}
+      {obj.type !== 'rack' && obj.type !== 'door' ? <BasicBlock obj={obj} selected={selected} /> : null}
+      {obj.type === 'door' ? <DoorMarker obj={obj} /> : null}
+      {obj.type === 'path' && obj.striped ? <PathStripes obj={obj} /> : null}
+      {selected && (
+        <mesh position={[0, 0.02, 0]}>
+          <boxGeometry args={[getFootprint(obj).width + 0.08, 0.025, getFootprint(obj).depth + 0.08]} />
+          <meshBasicMaterial color="#facc15" transparent opacity={0.38} />
+        </mesh>
+      )}
+    </ObjectWrapper>
+  );
 }
