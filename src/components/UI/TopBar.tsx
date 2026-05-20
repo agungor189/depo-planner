@@ -37,13 +37,14 @@ export function TopBar() {
   const setViewMode = useStore((state) => state.setViewMode);
   const warehouseConfig = useStore((state) => state.warehouseConfig);
   const objects = useStore((state) => state.objects);
+  const locationStocks = useStore((state) => state.locationStocks);
   const selectedId = useStore((state) => state.selectedId);
   const exportJSON = useStore((state) => state.exportJSON);
   const importJSON = useStore((state) => state.importJSON);
   const saveStatus = useStore((state) => state.saveStatus);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const usage = calculateAreaUsage(objects, warehouseConfig);
+  const usage = calculateAreaUsage(objects, warehouseConfig, locationStocks);
 
   const handleExport = () => {
     downloadText(
@@ -117,6 +118,12 @@ export function TopBar() {
           <div className="text-right">
             <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Lokasyon</div>
             <div className="font-mono text-sm text-blue-300">{usage.totalLocationCount}</div>
+          </div>
+          <div className="text-right">
+            <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Paket</div>
+            <div className="font-mono text-sm text-blue-300">
+              {usage.filledPackageCount}/{usage.totalPackageCapacity}
+            </div>
           </div>
           <div className="text-right">
             <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Kullanım</div>

@@ -18,7 +18,8 @@ export type ProductGroup =
   | 'Döküm'
   | 'Karbon Çelik'
   | 'PPR'
-  | 'Karışık';
+  | 'Karışık'
+  | 'Diğer';
 
 export type LocationFormat = 'standard' | 'padded' | 'verbose' | 'slash';
 
@@ -144,6 +145,7 @@ export interface LocationCode {
   binCode: string;
   shelfNumber: number;
   binNumber: number;
+  positionNumber: number;
   rackName: string;
   productGroup: ProductGroup;
   x: number;
@@ -152,7 +154,56 @@ export interface LocationCode {
   depth: number;
   height: number;
   note: string;
+  capacityPackages: number;
+  currentPackages: number;
+  sku: string;
+  productName: string;
+  category: ProductGroup;
+  supplierCode: string;
+  packageQuantity: number;
+  totalItemQuantity: number;
   qrContent: string;
+  productQrContent: string;
+}
+
+export interface PackageRecord {
+  packageId: string;
+  sku: string;
+  quantityInsidePackage: number;
+  createdAt: string;
+}
+
+export interface ProductItem {
+  id: string;
+  sku: string;
+  productName: string;
+  supplierCode: string;
+  category: ProductGroup;
+  packageCount: number;
+  quantityInsidePackage: number;
+  packageWidthCm: number;
+  packageDepthCm: number;
+  packageHeightCm: number;
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LocationStock {
+  locationCode: string;
+  rackCode: string;
+  shelfNumber: number;
+  positionNumber: number;
+  capacityPackages: number;
+  currentPackages: number;
+  sku: string;
+  productName: string;
+  category: ProductGroup;
+  supplierCode: string;
+  lot: string;
+  note: string;
+  quantityInsidePackage: number;
+  packages?: PackageRecord[];
 }
 
 export interface LayoutWarning {
@@ -174,6 +225,12 @@ export interface AreaUsage {
   totalLocationCount: number;
   packingAreaCount: number;
   columnCount: number;
+  totalPackageCapacity: number;
+  filledPackageCount: number;
+  freePackageCapacity: number;
+  packageUtilizationPercent: number;
+  totalSkuCount: number;
+  categoryPackageCounts: Record<string, number>;
 }
 
 export interface WarehousePlan {
@@ -184,6 +241,8 @@ export interface WarehousePlan {
   unitPreference: UnitPreference;
   gridSettings: GridSettings;
   objects: WarehouseObject[];
+  products: ProductItem[];
+  locationStocks: LocationStock[];
   locationCodeSettings: LocationCodeSettings;
   createdAt: string;
   updatedAt: string;

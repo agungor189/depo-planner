@@ -5,7 +5,9 @@ import {
   LayoutWarning,
   LocationCode,
   LocationCodeSettings,
+  LocationStock,
   PlanSummary,
+  ProductItem,
   ProductGroup,
   Rack,
   UnitPreference,
@@ -20,6 +22,7 @@ import {
   DEFAULT_GRID_SETTINGS,
   DEFAULT_LOCATION_SETTINGS,
   DEFAULT_WAREHOUSE_CONFIG,
+  LOCATION_PACKAGE_CAPACITY,
   calculateAreaUsage,
   buildRackCode,
   clampObjectToWarehouse,
@@ -54,6 +57,9 @@ interface StoreState {
   gridSettings: GridSettings;
   locationCodeSettings: LocationCodeSettings;
   objects: WarehouseObject[];
+  products: ProductItem[];
+  locationStocks: LocationStock[];
+  selectedLocationCode: string | null;
   selectedId: string | null;
   viewMode: ViewMode;
   plans: PlanSummary[];
@@ -62,6 +68,7 @@ interface StoreState {
   warnings: LayoutWarning[];
   saveStatus: string;
   sharedSyncStatus: string;
+  placementStatus: string;
 
   loadSharedState: () => Promise<void>;
   createEmptyPlan: (config: WarehouseConfig, unitPreference: UnitPreference) => void;
@@ -76,6 +83,15 @@ interface StoreState {
   setGridSize: (size: number) => void;
   updateGridSettings: (updates: Partial<GridSettings>) => void;
   updateLocationCodeSettings: (updates: Partial<LocationCodeSettings>) => void;
+  addProduct: (product: Omit<ProductItem, 'id' | 'createdAt' | 'updatedAt'>) => void;
+  updateProduct: (id: string, updates: Partial<ProductItem>) => void;
+  deleteProduct: (id: string) => void;
+  autoPlaceProduct: (productId: string, packageCount?: number) => void;
+  placeProductInLocation: (productId: string, locationCode: string, packageCount: number) => void;
+  adjustLocationPackages: (locationCode: string, delta: number) => void;
+  clearLocation: (locationCode: string) => void;
+  moveLocationStock: (fromLocationCode: string, toLocationCode: string) => void;
+  selectLocation: (locationCode: string | null) => void;
   addObject: (obj: WarehouseObjectNoId) => void;
   addRackGroup: (options: {
     rackGroup: string;
@@ -196,10 +212,111 @@ function normalizeWarehouseConfig(raw?: Partial<WarehouseConfig>): WarehouseConf
 function normalizeLocationCodeSettings(raw?: Partial<LocationCodeSettings>): LocationCodeSettings {
   return {
     ...DEFAULT_LOCATION_SETTINGS,
-    ...(raw || {}),
-    shelfPrefix: raw?.shelfPrefix || DEFAULT_LOCATION_SETTINGS.shelfPrefix,
-    binPrefix: raw?.binPrefix || DEFAULT_LOCATION_SETTINGS.binPrefix,
-    separator: raw?.separator || DEFAULT_LOCATION_SETTINGS.separator,
+    format: 'standard',
+    shelfPrefix: 'K',
+    binPrefix: 'P',
+    separator: '-',
+    qrPrefix: raw?.qrPrefix || DEFAULT_LOCATION_SETTINGS.qrPrefix,
+  };
+}
+
+const validProductGroups: ProductGroup[] = ['Alüminyum', 'Döküm', 'Karbon Çelik', 'PPR', 'Karışık', 'Diğer'];
+
+function normalizeProductGroup(value?: string): ProductGroup {
+  return validProductGroups.includes(value as ProductGroup) ? value as ProductGroup : 'Diğer';
+}
+
+function normalizeSku(value?: string): string {
+  return String(value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '-');
+}
+
+function parseLocationCode(value: string) {
+  const match = String(value || '').trim().toUpperCase().match(/^([A-Z0-9]+)-K(\d+)-P(\d+)$/);
+  if (!match) return null;
+  return {
+    rackCode: match[1],
+    shelfNumber: Math.max(1, Number(match[2])),
+    positionNumber: Math.max(1, Number(match[3])),
+  };
+}
+
+function normalizeProduct(raw: Partial<ProductItem>): ProductItem {
+  const timestamp = now();
+  const sku = normalizeSku(raw.sku);
+  return {
+    id: raw.id || generateId(),
+    sku: sku || 'SKU-YENI',
+    productName: raw.productName || raw.sku || 'Yeni Ürün',
+    supplierCode: raw.supplierCode || sku || '',
+    category: normalizeProductGroup(raw.category),
+    packageCount: Math.max(0, Math.floor(Number(raw.packageCount ?? 1))),
+    quantityInsidePackage: Math.max(0, Math.floor(Number(raw.quantityInsidePackage ?? 1))),
+    packageWidthCm: Math.max(0, Number(raw.packageWidthCm ?? 36)),
+    packageDepthCm: Math.max(0, Number(raw.packageDepthCm ?? 25)),
+    packageHeightCm: Math.max(0, Number(raw.packageHeightCm ?? 25)),
+    note: raw.note || '',
+    createdAt: raw.createdAt || timestamp,
+    updatedAt: raw.updatedAt || timestamp,
+  };
+}
+
+function normalizeLocationStock(raw: Partial<LocationStock>): LocationStock | null {
+  const parsed = parseLocationCode(String(raw.locationCode || ''));
+  if (!parsed) return null;
+  const currentPackages = Math.min(
+    Math.max(0, Math.floor(Number(raw.currentPackages || 0))),
+    LOCATION_PACKAGE_CAPACITY,
+  );
+  if (currentPackages <= 0) return null;
+
+  return {
+    locationCode: String(raw.locationCode).trim().toUpperCase(),
+    rackCode: raw.rackCode || parsed.rackCode,
+    shelfNumber: Number(raw.shelfNumber || parsed.shelfNumber),
+    positionNumber: Number(raw.positionNumber || parsed.positionNumber),
+    capacityPackages: LOCATION_PACKAGE_CAPACITY,
+    currentPackages,
+    sku: normalizeSku(raw.sku),
+    productName: raw.productName || '',
+    category: normalizeProductGroup(raw.category),
+    supplierCode: raw.supplierCode || normalizeSku(raw.sku),
+    lot: raw.lot || '',
+    note: raw.note || '',
+    quantityInsidePackage: Math.max(0, Math.floor(Number(raw.quantityInsidePackage || 0))),
+    packages: Array.isArray(raw.packages) ? raw.packages : undefined,
+  };
+}
+
+function makeLocationStock(product: ProductItem, location: LocationCode, packageCount: number): LocationStock {
+  return {
+    locationCode: location.locationCode,
+    rackCode: location.rackCode,
+    shelfNumber: location.shelfNumber,
+    positionNumber: location.positionNumber,
+    capacityPackages: LOCATION_PACKAGE_CAPACITY,
+    currentPackages: Math.min(Math.max(0, Math.floor(packageCount)), LOCATION_PACKAGE_CAPACITY),
+    sku: product.sku,
+    productName: product.productName,
+    category: product.category,
+    supplierCode: product.supplierCode,
+    lot: '',
+    note: '',
+    quantityInsidePackage: product.quantityInsidePackage,
+  };
+}
+
+function mergeStockWithProduct(stock: LocationStock, product: ProductItem, packageCount: number): LocationStock {
+  return {
+    ...stock,
+    currentPackages: Math.min(stock.capacityPackages, stock.currentPackages + packageCount),
+    sku: product.sku,
+    productName: product.productName,
+    category: product.category,
+    supplierCode: product.supplierCode,
+    quantityInsidePackage: product.quantityInsidePackage,
   };
 }
 
@@ -385,6 +502,8 @@ function makePlan(
   warehouseConfig: WarehouseConfig,
   objects: WarehouseObject[],
   unitPreference: UnitPreference,
+  products: ProductItem[] = [],
+  locationStocks: LocationStock[] = [],
 ): WarehousePlan {
   const timestamp = now();
   return {
@@ -395,6 +514,8 @@ function makePlan(
     unitPreference,
     gridSettings: { ...DEFAULT_GRID_SETTINGS },
     objects,
+    products,
+    locationStocks,
     locationCodeSettings: normalizeLocationCodeSettings(),
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -513,6 +634,54 @@ function createSampleObjects(): WarehouseObject[] {
   return objects;
 }
 
+function createSampleProducts(): ProductItem[] {
+  return [
+    normalizeProduct({
+      sku: 'AL-125-B',
+      productName: '1 İnç 90° Dirsek',
+      supplierCode: 'AL-125-B',
+      category: 'Alüminyum',
+      packageCount: 10,
+      quantityInsidePackage: 75,
+      packageWidthCm: 36,
+      packageDepthCm: 25,
+      packageHeightCm: 25,
+    }),
+    normalizeProduct({
+      sku: 'DK-220-A',
+      productName: 'Döküm Flanş',
+      supplierCode: 'DK-220-A',
+      category: 'Döküm',
+      packageCount: 5,
+      quantityInsidePackage: 20,
+      packageWidthCm: 36,
+      packageDepthCm: 25,
+      packageHeightCm: 25,
+    }),
+  ];
+}
+
+function createSampleLocationStocks(objects: WarehouseObject[], products: ProductItem[]): LocationStock[] {
+  const locations = generateAllLocationCodes(objects, normalizeLocationCodeSettings());
+  const byCode = new Map(locations.map((location) => [location.locationCode, location]));
+  const al = products.find((product) => product.sku === 'AL-125-B');
+  const dk = products.find((product) => product.sku === 'DK-220-A');
+  const stocks: LocationStock[] = [];
+  if (al) {
+    [['A1-K1-P1', 4], ['A1-K1-P2', 4], ['A1-K1-P3', 2]].forEach(([code, count]) => {
+      const location = byCode.get(String(code));
+      if (location) stocks.push(makeLocationStock(al, location, Number(count)));
+    });
+  }
+  if (dk) {
+    [['B1-K1-P1', 4], ['B1-K1-P2', 1]].forEach(([code, count]) => {
+      const location = byCode.get(String(code));
+      if (location) stocks.push(makeLocationStock(dk, location, Number(count)));
+    });
+  }
+  return stocks;
+}
+
 function migratePlan(raw: any): WarehousePlan | null {
   if (!raw) return null;
 
@@ -523,6 +692,12 @@ function migratePlan(raw: any): WarehousePlan | null {
       list.push(normalizeObject(object, warehouseConfig, list));
       return list;
     }, []);
+    const products = Array.isArray(raw.products)
+      ? raw.products.map(normalizeProduct)
+      : [];
+    const locationStocks = Array.isArray(raw.locationStocks)
+      ? raw.locationStocks.map(normalizeLocationStock).filter(Boolean) as LocationStock[]
+      : [];
     return {
       version: APP_VERSION,
       id: raw.id || generateId(),
@@ -531,6 +706,8 @@ function migratePlan(raw: any): WarehousePlan | null {
       unitPreference: raw.unitPreference === 'cm' ? 'cm' : 'm',
       gridSettings: { ...DEFAULT_GRID_SETTINGS, ...(raw.gridSettings || {}) },
       objects,
+      products,
+      locationStocks,
       locationCodeSettings: normalizeLocationCodeSettings(raw.locationCodeSettings),
       createdAt: raw.createdAt || now(),
       updatedAt: raw.updatedAt || now(),
@@ -620,6 +797,9 @@ function stateFromPlan(
       gridSettings: DEFAULT_GRID_SETTINGS,
       locationCodeSettings: normalizeLocationCodeSettings(),
       objects: [],
+      products: [],
+      locationStocks: [],
+      selectedLocationCode: null,
       selectedId: null,
       plans: planSummaries(plans),
       activePlanId: null,
@@ -627,6 +807,7 @@ function stateFromPlan(
       warnings: [],
       saveStatus,
       sharedSyncStatus,
+      placementStatus: '',
     };
   }
 
@@ -637,6 +818,9 @@ function stateFromPlan(
     gridSettings: plan.gridSettings,
     locationCodeSettings: normalizeLocationCodeSettings(plan.locationCodeSettings),
     objects: plan.objects,
+    products: plan.products,
+    locationStocks: plan.locationStocks,
+    selectedLocationCode: null,
     selectedId: null,
     plans: planSummaries(plans),
     activePlanId: plan.id,
@@ -644,6 +828,7 @@ function stateFromPlan(
     warnings: validateObjects(plan.objects, plan.warehouseConfig, plan.gridSettings),
     saveStatus,
     sharedSyncStatus,
+    placementStatus: '',
   };
 }
 
@@ -664,6 +849,8 @@ function savePlanInState(state: StoreState, patch: Partial<StoreState>): Partial
     unitPreference: patch.unitPreference || state.unitPreference,
     gridSettings: patch.gridSettings || state.gridSettings,
     objects: patch.objects || state.objects,
+    products: patch.products || state.products,
+    locationStocks: patch.locationStocks || state.locationStocks,
     locationCodeSettings: patch.locationCodeSettings || state.locationCodeSettings,
     updatedAt: now(),
   };
@@ -684,6 +871,8 @@ function savePlanInState(state: StoreState, patch: Partial<StoreState>): Partial
     unitPreference: updatedPlan.unitPreference,
     gridSettings: updatedPlan.gridSettings,
     objects: updatedPlan.objects,
+    products: updatedPlan.products,
+    locationStocks: updatedPlan.locationStocks,
     locationCodeSettings: updatedPlan.locationCodeSettings,
     warnings,
     plans: planSummaries(nextFullPlans),
@@ -725,6 +914,9 @@ export const useStore = create<StoreState>((set, get) => {
     gridSettings: initialGridSettings,
     locationCodeSettings: normalizeLocationCodeSettings(activePlan?.locationCodeSettings),
     objects: activePlan?.objects || [],
+    products: activePlan?.products || [],
+    locationStocks: activePlan?.locationStocks || [],
+    selectedLocationCode: null,
     selectedId: null,
     viewMode: '2D',
     plans: planSummaries(persistedData.plans),
@@ -733,6 +925,7 @@ export const useStore = create<StoreState>((set, get) => {
     warnings: initialWarnings,
     saveStatus: activePlan ? 'Kaydedildi' : 'Plan bekleniyor',
     sharedSyncStatus: activePlan ? 'Yerel kayıt yüklendi' : 'Ortak kayıt bekleniyor',
+    placementStatus: '',
 
     loadSharedState: async () => {
       set({ sharedSyncStatus: 'Ortak kayıt okunuyor...' });
@@ -774,6 +967,9 @@ export const useStore = create<StoreState>((set, get) => {
         gridSettings: plan.gridSettings,
         locationCodeSettings: plan.locationCodeSettings,
         objects: [],
+        products: [],
+        locationStocks: [],
+        selectedLocationCode: null,
         selectedId: null,
         plans: planSummaries(plans),
         activePlanId: plan.id,
@@ -787,7 +983,9 @@ export const useStore = create<StoreState>((set, get) => {
     loadSamplePlan: () => set(() => {
       const warehouseConfig = { ...DEFAULT_WAREHOUSE_CONFIG, name: 'DSDST Örnek Depo' };
       const objects = createSampleObjects();
-      const plan = makePlan(warehouseConfig.name, warehouseConfig, objects, 'm');
+      const products = createSampleProducts();
+      const locationStocks = createSampleLocationStocks(objects, products);
+      const plan = makePlan(warehouseConfig.name, warehouseConfig, objects, 'm', products, locationStocks);
       const plans = [...getFullPlans(), plan];
       cacheFullPlans(plans);
       persist({ activePlanId: plan.id, plans });
@@ -798,6 +996,9 @@ export const useStore = create<StoreState>((set, get) => {
         gridSettings: plan.gridSettings,
         locationCodeSettings: plan.locationCodeSettings,
         objects,
+        products,
+        locationStocks,
+        selectedLocationCode: null,
         selectedId: null,
         plans: planSummaries(plans),
         activePlanId: plan.id,
@@ -812,6 +1013,8 @@ export const useStore = create<StoreState>((set, get) => {
       if (!state.hasActivePlan) return state;
       const next = savePlanInState(state, {
         objects: [],
+        locationStocks: [],
+        selectedLocationCode: null,
         selectedId: null,
       });
       return { ...next, saveStatus: 'Plan sıfırlandı', sharedSyncStatus: 'Ortak kayda yazılıyor' };
@@ -827,6 +1030,8 @@ export const useStore = create<StoreState>((set, get) => {
         id: generateId(),
         name: `${source.name} Kopya`,
         objects: source.objects.map((object) => ({ ...object, id: generateId() })) as WarehouseObject[],
+        products: source.products.map((product) => ({ ...product, id: generateId() })),
+        locationStocks: source.locationStocks.map((stock) => ({ ...stock })),
         createdAt: timestamp,
         updatedAt: timestamp,
       };
@@ -840,6 +1045,9 @@ export const useStore = create<StoreState>((set, get) => {
         gridSettings: copy.gridSettings,
         locationCodeSettings: copy.locationCodeSettings,
         objects: copy.objects,
+        products: copy.products,
+        locationStocks: copy.locationStocks,
+        selectedLocationCode: null,
         selectedId: null,
         plans: planSummaries(plans),
         activePlanId: copy.id,
@@ -863,6 +1071,9 @@ export const useStore = create<StoreState>((set, get) => {
           gridSettings: DEFAULT_GRID_SETTINGS,
           locationCodeSettings: normalizeLocationCodeSettings(),
           objects: [],
+          products: [],
+          locationStocks: [],
+          selectedLocationCode: null,
           selectedId: null,
           plans: [],
           activePlanId: null,
@@ -879,6 +1090,9 @@ export const useStore = create<StoreState>((set, get) => {
         gridSettings: nextActive.gridSettings,
         locationCodeSettings: nextActive.locationCodeSettings,
         objects: nextActive.objects,
+        products: nextActive.products,
+        locationStocks: nextActive.locationStocks,
+        selectedLocationCode: null,
         selectedId: null,
         plans: planSummaries(plans),
         activePlanId: nextActive.id,
@@ -900,6 +1114,9 @@ export const useStore = create<StoreState>((set, get) => {
         gridSettings: plan.gridSettings,
         locationCodeSettings: plan.locationCodeSettings,
         objects: plan.objects,
+        products: plan.products,
+        locationStocks: plan.locationStocks,
+        selectedLocationCode: null,
         selectedId: null,
         activePlanId: plan.id,
         hasActivePlan: true,
@@ -949,6 +1166,184 @@ export const useStore = create<StoreState>((set, get) => {
     updateLocationCodeSettings: (updates) => set((state) => savePlanInState(state, {
       locationCodeSettings: normalizeLocationCodeSettings({ ...state.locationCodeSettings, ...updates }),
     })),
+
+    addProduct: (product) => set((state) => {
+      if (!state.hasActivePlan) return state;
+      const normalized = normalizeProduct(product);
+      const existing = state.products.find((item) => item.sku === normalized.sku);
+      const products = existing
+        ? state.products.map((item) =>
+            item.id === existing.id
+              ? { ...item, ...normalized, id: item.id, createdAt: item.createdAt, updatedAt: now() }
+              : item,
+          )
+        : [...state.products, normalized];
+
+      return savePlanInState(state, {
+        products,
+        placementStatus: existing ? `${normalized.sku} ürünü güncellendi.` : `${normalized.sku} ürün listesine eklendi.`,
+      });
+    }),
+
+    updateProduct: (id, updates) => set((state) => {
+      const products = state.products.map((product) =>
+        product.id === id ? normalizeProduct({ ...product, ...updates, id, createdAt: product.createdAt, updatedAt: now() }) : product,
+      );
+      return savePlanInState(state, { products });
+    }),
+
+    deleteProduct: (id) => set((state) => {
+      const product = state.products.find((item) => item.id === id);
+      if (!product) return state;
+      return savePlanInState(state, {
+        products: state.products.filter((item) => item.id !== id),
+        placementStatus: `${product.sku} ürün kartı silindi. Raflardaki yerleşim korunur.`,
+      });
+    }),
+
+    autoPlaceProduct: (productId, packageCount) => set((state) => {
+      const product = state.products.find((item) => item.id === productId);
+      if (!product) return state;
+      let remaining = Math.max(0, Math.floor(Number(packageCount ?? product.packageCount) || 0));
+      if (remaining <= 0) return { placementStatus: 'Yerleştirilecek paket sayısı 0’dan büyük olmalı.' };
+
+      let locationStocks = [...state.locationStocks];
+      const buildLocations = () => generateAllLocationCodes(state.objects, state.locationCodeSettings, locationStocks);
+      const placeInto = (location: LocationCode) => {
+        if (remaining <= 0) return;
+        const existingIndex = locationStocks.findIndex((stock) => stock.locationCode === location.locationCode);
+        const existing = existingIndex >= 0 ? locationStocks[existingIndex] : null;
+        if (existing && existing.sku !== product.sku && existing.currentPackages > 0) return;
+
+        const currentPackages = existing?.currentPackages || 0;
+        const free = LOCATION_PACKAGE_CAPACITY - currentPackages;
+        const amount = Math.min(free, remaining);
+        if (amount <= 0) return;
+
+        if (existing) {
+          locationStocks = locationStocks.map((stock, index) =>
+            index === existingIndex ? mergeStockWithProduct(stock, product, amount) : stock,
+          );
+        } else {
+          locationStocks.push(makeLocationStock(product, location, amount));
+        }
+        remaining -= amount;
+      };
+
+      buildLocations()
+        .filter((location) => location.sku === product.sku && location.currentPackages > 0 && location.currentPackages < LOCATION_PACKAGE_CAPACITY)
+        .forEach(placeInto);
+      buildLocations()
+        .filter((location) => location.currentPackages === 0 && location.productGroup === product.category)
+        .forEach(placeInto);
+      buildLocations()
+        .filter((location) => location.currentPackages === 0)
+        .forEach(placeInto);
+
+      const placed = Math.max(0, Math.floor(Number(packageCount ?? product.packageCount) || 0)) - remaining;
+      return savePlanInState(state, {
+        locationStocks,
+        placementStatus:
+          remaining > 0
+            ? `${product.sku}: ${placed} paket yerleştirildi, ${remaining} paket için boş yer yok.`
+            : `${product.sku}: ${placed} paket otomatik yerleştirildi.`,
+      });
+    }),
+
+    placeProductInLocation: (productId, locationCode, packageCount) => set((state) => {
+      const product = state.products.find((item) => item.id === productId);
+      const location = generateAllLocationCodes(state.objects, state.locationCodeSettings, state.locationStocks)
+        .find((item) => item.locationCode === locationCode);
+      if (!product || !location) return state;
+      const amount = Math.max(0, Math.floor(Number(packageCount) || 0));
+      if (amount <= 0) return { placementStatus: 'Paket sayısı 0’dan büyük olmalı.' };
+
+      const existing = state.locationStocks.find((stock) => stock.locationCode === locationCode);
+      if (existing && existing.currentPackages > 0 && existing.sku !== product.sku) {
+        return { placementStatus: 'Bu lokasyonda farklı SKU var. Karışık SKU’ya izin verilmez.' };
+      }
+      const currentPackages = existing?.currentPackages || 0;
+      const free = LOCATION_PACKAGE_CAPACITY - currentPackages;
+      const placed = Math.min(free, amount);
+      if (placed <= 0) return { placementStatus: `${locationCode} dolu.` };
+
+      const locationStocks = existing
+        ? state.locationStocks.map((stock) =>
+            stock.locationCode === locationCode ? mergeStockWithProduct(stock, product, placed) : stock,
+          )
+        : [...state.locationStocks, makeLocationStock(product, location, placed)];
+
+      return savePlanInState(state, {
+        locationStocks,
+        selectedLocationCode: locationCode,
+        placementStatus: `${locationCode}: ${product.sku} için ${placed}/${amount} paket eklendi.`,
+      });
+    }),
+
+    adjustLocationPackages: (locationCode, delta) => set((state) => {
+      const stock = state.locationStocks.find((item) => item.locationCode === locationCode);
+      if (!stock) return { placementStatus: `${locationCode} zaten boş.` };
+      const nextCount = Math.min(stock.capacityPackages, Math.max(0, stock.currentPackages + delta));
+      const locationStocks = nextCount <= 0
+        ? state.locationStocks.filter((item) => item.locationCode !== locationCode)
+        : state.locationStocks.map((item) => item.locationCode === locationCode ? { ...item, currentPackages: nextCount } : item);
+      return savePlanInState(state, {
+        locationStocks,
+        placementStatus: `${locationCode}: doluluk ${nextCount}/${LOCATION_PACKAGE_CAPACITY}.`,
+      });
+    }),
+
+    clearLocation: (locationCode) => set((state) => savePlanInState(state, {
+      locationStocks: state.locationStocks.filter((stock) => stock.locationCode !== locationCode),
+      placementStatus: `${locationCode} boşaltıldı.`,
+    })),
+
+    moveLocationStock: (fromLocationCode, toLocationCode) => set((state) => {
+      if (fromLocationCode === toLocationCode) return state;
+      const source = state.locationStocks.find((stock) => stock.locationCode === fromLocationCode);
+      const targetLocation = generateAllLocationCodes(state.objects, state.locationCodeSettings, state.locationStocks)
+        .find((location) => location.locationCode === toLocationCode);
+      if (!source || !targetLocation) return { placementStatus: 'Taşınacak kaynak veya hedef lokasyon bulunamadı.' };
+      const target = state.locationStocks.find((stock) => stock.locationCode === toLocationCode);
+      if (target && target.currentPackages > 0 && target.sku !== source.sku) {
+        return { placementStatus: 'Hedef lokasyonda farklı SKU var. Karışık SKU’ya izin verilmez.' };
+      }
+
+      const free = LOCATION_PACKAGE_CAPACITY - (target?.currentPackages || 0);
+      const moved = Math.min(free, source.currentPackages);
+      if (moved <= 0) return { placementStatus: `${toLocationCode} dolu.` };
+
+      const product = normalizeProduct({
+        sku: source.sku,
+        productName: source.productName,
+        supplierCode: source.supplierCode,
+        category: source.category,
+        quantityInsidePackage: source.quantityInsidePackage,
+      });
+      let locationStocks = state.locationStocks
+        .map((stock) =>
+          stock.locationCode === fromLocationCode
+            ? { ...stock, currentPackages: stock.currentPackages - moved }
+            : stock,
+        )
+        .filter((stock) => stock.currentPackages > 0);
+
+      if (target) {
+        locationStocks = locationStocks.map((stock) =>
+          stock.locationCode === toLocationCode ? mergeStockWithProduct(stock, product, moved) : stock,
+        );
+      } else {
+        locationStocks.push(makeLocationStock(product, targetLocation, moved));
+      }
+
+      return savePlanInState(state, {
+        locationStocks,
+        selectedLocationCode: toLocationCode,
+        placementStatus: `${fromLocationCode} → ${toLocationCode}: ${moved} paket taşındı.`,
+      });
+    }),
+
+    selectLocation: (locationCode) => set({ selectedLocationCode: locationCode }),
 
     addObject: (obj) => set((state) => {
       if (!state.hasActivePlan) return state;
@@ -1031,10 +1426,20 @@ export const useStore = create<StoreState>((set, get) => {
       return savePlanInState(state, { objects: nextObjects });
     }),
 
-    deleteObject: (id) => set((state) => savePlanInState(state, {
-      objects: state.objects.filter((object) => object.id !== id),
-      selectedId: state.selectedId === id ? null : state.selectedId,
-    })),
+    deleteObject: (id) => set((state) => {
+      const deleted = state.objects.find((object) => object.id === id);
+      const deletedCodes = deleted?.type === 'rack'
+        ? new Set(generateRackLocationCodes(deleted, state.locationCodeSettings).map((location) => location.locationCode))
+        : new Set<string>();
+      return savePlanInState(state, {
+        objects: state.objects.filter((object) => object.id !== id),
+        locationStocks: deletedCodes.size
+          ? state.locationStocks.filter((stock) => !deletedCodes.has(stock.locationCode))
+          : state.locationStocks,
+        selectedLocationCode: state.selectedLocationCode && deletedCodes.has(state.selectedLocationCode) ? null : state.selectedLocationCode,
+        selectedId: state.selectedId === id ? null : state.selectedId,
+      });
+    }),
 
     removeObject: (id) => get().deleteObject(id),
 
@@ -1077,6 +1482,8 @@ export const useStore = create<StoreState>((set, get) => {
         unitPreference: state.unitPreference,
         gridSettings: state.gridSettings,
         objects: state.objects,
+        products: state.products,
+        locationStocks: state.locationStocks,
         locationCodeSettings: state.locationCodeSettings,
         createdAt: getFullPlans().find((item) => item.id === state.activePlanId)?.createdAt || now(),
         updatedAt: now(),
@@ -1099,6 +1506,9 @@ export const useStore = create<StoreState>((set, get) => {
           gridSettings: plan.gridSettings,
           locationCodeSettings: plan.locationCodeSettings,
           objects: plan.objects,
+          products: plan.products,
+          locationStocks: plan.locationStocks,
+          selectedLocationCode: null,
           selectedId: null,
           plans: planSummaries(plans),
           activePlanId: plan.id,
@@ -1122,13 +1532,13 @@ export const useStore = create<StoreState>((set, get) => {
 
     exportRacksCSV: () => racksToCsv(get().objects),
 
-    exportSummaryCSV: () => summaryToCsv(calculateAreaUsage(get().objects, get().warehouseConfig)),
+    exportSummaryCSV: () => summaryToCsv(calculateAreaUsage(get().objects, get().warehouseConfig, get().locationStocks)),
 
     generateLocationCodes: (rackId) => {
       const state = get();
-      if (!rackId) return generateAllLocationCodes(state.objects, state.locationCodeSettings);
+      if (!rackId) return generateAllLocationCodes(state.objects, state.locationCodeSettings, state.locationStocks);
       const rack = state.objects.find((object) => object.id === rackId && object.type === 'rack');
-      return rack?.type === 'rack' ? generateRackLocationCodes(rack, state.locationCodeSettings) : [];
+      return rack?.type === 'rack' ? generateRackLocationCodes(rack, state.locationCodeSettings, state.locationStocks) : [];
     },
 
     validateLayout: () => {

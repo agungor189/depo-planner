@@ -1,4 +1,4 @@
-import { ReactNode, useMemo, useState } from 'react';
+import { DragEvent, ReactNode, useMemo, useState } from 'react';
 import {
   Copy,
   Eye,
@@ -9,7 +9,7 @@ import {
   Unlock,
 } from 'lucide-react';
 import { useStore } from '../../store/useStore';
-import { LocationFormat, ProductGroup, WarehouseObject } from '../../types';
+import { LocationCode, ProductGroup, ProductItem, WarehouseObject } from '../../types';
 import {
   buildRackCode,
   displayMeasure,
@@ -20,32 +20,47 @@ import {
   toMeters,
 } from '../../utils/warehouse';
 
-const productGroups: ProductGroup[] = ['Alüminyum', 'Döküm', 'Karbon Çelik', 'PPR', 'Karışık'];
-
-const locationFormats: Array<{ value: LocationFormat; label: string }> = [
-  { value: 'standard', label: 'A1-K1-P1' },
-  { value: 'padded', label: 'A1-K01-P01' },
-  { value: 'verbose', label: 'RAF-A1-KAT-1-P1' },
-  { value: 'slash', label: 'A1/K1/P01' },
-];
+const productGroups: ProductGroup[] = ['Alüminyum', 'Döküm', 'Karbon Çelik', 'PPR', 'Diğer', 'Karışık'];
 
 const labelSizes = ['40x10 mm', '50x20 mm', '80x30 mm', '100x100 mm'];
 
+const categoryColors: Record<ProductGroup, string> = {
+  Alüminyum: 'border-sky-600 bg-sky-950/60 text-sky-100',
+  Döküm: 'border-violet-600 bg-violet-950/60 text-violet-100',
+  'Karbon Çelik': 'border-zinc-500 bg-zinc-900 text-zinc-100',
+  PPR: 'border-emerald-600 bg-emerald-950/60 text-emerald-100',
+  Diğer: 'border-slate-600 bg-slate-800 text-slate-100',
+  Karışık: 'border-amber-600 bg-amber-950/60 text-amber-100',
+};
+
+function locationCellClass(location: LocationCode) {
+  if (location.currentPackages <= 0) return 'border-slate-800 bg-slate-900 text-slate-500';
+  if (location.currentPackages >= location.capacityPackages) return categoryColors[location.category] || categoryColors.Diğer;
+  return 'border-amber-600 bg-amber-950/60 text-amber-100';
+}
+
 export function RightPanel() {
   const selectedId = useStore((state) => state.selectedId);
+  const selectedLocationCode = useStore((state) => state.selectedLocationCode);
   const objects = useStore((state) => state.objects);
+  const products = useStore((state) => state.products);
   const unitPreference = useStore((state) => state.unitPreference);
   const warehouseConfig = useStore((state) => state.warehouseConfig);
   const warnings = useStore((state) => state.warnings);
-  const locationCodeSettings = useStore((state) => state.locationCodeSettings);
   const updateObject = useStore((state) => state.updateObject);
   const deleteObject = useStore((state) => state.deleteObject);
   const duplicateObject = useStore((state) => state.duplicateObject);
-  const updateLocationCodeSettings = useStore((state) => state.updateLocationCodeSettings);
   const generateLocationCodes = useStore((state) => state.generateLocationCodes);
   const selectObject = useStore((state) => state.selectObject);
+  const selectLocation = useStore((state) => state.selectLocation);
+  const placeProductInLocation = useStore((state) => state.placeProductInLocation);
+  const adjustLocationPackages = useStore((state) => state.adjustLocationPackages);
+  const clearLocation = useStore((state) => state.clearLocation);
+  const moveLocationStock = useStore((state) => state.moveLocationStock);
+  const placementStatus = useStore((state) => state.placementStatus);
   const [labelMode, setLabelMode] = useState<'rack' | 'all' | 'single'>('rack');
   const [labelSize, setLabelSize] = useState(labelSizes[1]);
+  const [dropRequest, setDropRequest] = useState<{ product: ProductItem; location: LocationCode; count: string } | null>(null);
 
   const obj = objects.find((object) => object.id === selectedId);
 
@@ -63,11 +78,13 @@ export function RightPanel() {
   }
 
   const locations = obj.type === 'rack' ? generateLocationCodes(obj.id) : [];
+  const selectedLocation = locations.find((location) => location.locationCode === selectedLocationCode)
+    || (selectedLocationCode ? generateLocationCodes().find((location) => location.locationCode === selectedLocationCode) : null);
   const previewLocations =
     labelMode === 'all'
       ? generateLocationCodes().slice(0, 24)
       : labelMode === 'single'
-        ? locations.slice(0, 1)
+        ? (selectedLocation ? [selectedLocation] : locations.slice(0, 1))
         : locations.slice(0, 24);
   const faceRows =
     obj.type === 'rack'
@@ -96,6 +113,24 @@ export function RightPanel() {
     if (side === 'right') handleChange({ x: warehouseConfig.width - footprint.width });
     if (side === 'bottom') handleChange({ z: 0 });
     if (side === 'top') handleChange({ z: warehouseConfig.length - footprint.depth });
+  };
+
+  const handleDropOnLocation = (event: DragEvent<HTMLButtonElement>, location: LocationCode) => {
+    event.preventDefault();
+    const productId = event.dataTransfer.getData('application/dsdst-product-id');
+    const product = products.find((item) => item.id === productId);
+    if (!product) return;
+    setDropRequest({
+      product,
+      location,
+      count: String(Math.min(location.capacityPackages - location.currentPackages, product.packageCount || 1) || 1),
+    });
+  };
+
+  const confirmDrop = () => {
+    if (!dropRequest) return;
+    placeProductInLocation(dropRequest.product.id, dropRequest.location.locationCode, Number(dropRequest.count));
+    setDropRequest(null);
   };
 
   const objectTypeLabel = getObjectLabel(obj);
@@ -225,9 +260,18 @@ export function RightPanel() {
             />
           </div>
           <div className="border border-blue-900 bg-blue-950/30 p-3 text-xs text-blue-100">
-            Toplam lokasyon: <strong>{locations.length}</strong> · Raf ölçüsü:{' '}
-            {displayMeasure(obj.width, unitPreference)} x {displayMeasure(obj.depth, unitPreference)} x{' '}
-            {displayMeasure(obj.height, unitPreference)}
+            <div>
+              Toplam ana lokasyon: <strong>{locations.length}</strong> · Paket kapasitesi:{' '}
+              <strong>{locations.reduce((sum, location) => sum + location.capacityPackages, 0)}</strong>
+            </div>
+            <div>
+              Dolu paket: <strong>{locations.reduce((sum, location) => sum + location.currentPackages, 0)}</strong> · Boş kapasite:{' '}
+              <strong>{locations.reduce((sum, location) => sum + (location.capacityPackages - location.currentPackages), 0)}</strong>
+            </div>
+            <div>
+              Raf ölçüsü: {displayMeasure(obj.width, unitPreference)} x {displayMeasure(obj.depth, unitPreference)} x{' '}
+              {displayMeasure(obj.height, unitPreference)}
+            </div>
           </div>
         </section>
       )}
@@ -240,18 +284,108 @@ export function RightPanel() {
           <div className="overflow-x-auto border border-slate-800 bg-slate-950 p-2">
             <div className="min-w-max space-y-1">
               {faceRows.map((row, rowIndex) => (
-                <div key={rowIndex} className="grid gap-1" style={{ gridTemplateColumns: `repeat(${Math.max(row.length, 1)}, minmax(86px, 1fr))` }}>
+                <div
+                  key={rowIndex}
+                  className="grid gap-1"
+                  style={{ gridTemplateColumns: `42px repeat(${Math.max(row.length, 1)}, minmax(104px, 1fr))` }}
+                >
+                  <div className="flex items-center justify-center border border-slate-800 bg-slate-900 font-mono text-[11px] font-black text-slate-400">
+                    K{row[0]?.shelfNumber || obj.shelfCount - rowIndex}
+                  </div>
                   {row.map((location) => (
-                    <div
+                    <button
                       key={location.locationCode}
-                      className="border border-slate-700 bg-slate-900 px-2 py-2 text-center font-mono text-[10px] text-blue-200"
+                      onClick={() => selectLocation(location.locationCode)}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => handleDropOnLocation(event, location)}
+                      className={`min-h-16 border px-2 py-2 text-left font-mono text-[10px] transition-colors hover:border-blue-400 ${
+                        selectedLocationCode === location.locationCode ? 'ring-2 ring-blue-400' : ''
+                      } ${locationCellClass(location)}`}
                     >
-                      {location.locationCode}
-                    </div>
+                      <div className="font-black text-blue-100">{location.locationCode}</div>
+                      <div className="mt-1 truncate">{location.sku || 'Boş'}</div>
+                      <div className="mt-1 font-black">
+                        {location.currentPackages}/{location.capacityPackages}
+                      </div>
+                    </button>
                   ))}
                 </div>
               ))}
             </div>
+          </div>
+        </section>
+      )}
+
+      {selectedLocation && (
+        <section className="space-y-3 border-b border-slate-800 py-4">
+          <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Seçili Lokasyon</div>
+          <div className={`border p-3 text-xs ${locationCellClass(selectedLocation)}`}>
+            <div className="font-mono text-base font-black text-blue-100">{selectedLocation.locationCode}</div>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <span>Raf: {selectedLocation.rackCode}</span>
+              <span>Kat: K{selectedLocation.shelfNumber}</span>
+              <span>Pozisyon: P{selectedLocation.positionNumber}</span>
+              <span>Kapasite: {selectedLocation.capacityPackages} paket</span>
+              <span>Doluluk: {selectedLocation.currentPackages}/{selectedLocation.capacityPackages}</span>
+              <span>SKU: {selectedLocation.sku || 'Boş'}</span>
+              <span className="col-span-2">Ürün: {selectedLocation.productName || 'Boş'}</span>
+              <span>Kategori: {selectedLocation.currentPackages ? selectedLocation.category : '-'}</span>
+              <span>İç adet: {selectedLocation.packageQuantity}</span>
+              <span className="col-span-2">Toplam ürün adedi: {selectedLocation.totalItemQuantity}</span>
+            </div>
+          </div>
+          {placementStatus && <div className="border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-300">{placementStatus}</div>}
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => {
+                const sku = selectedLocation.sku;
+                const product = sku ? products.find((item) => item.sku === sku) : null;
+                if (!product) return;
+                placeProductInLocation(product.id, selectedLocation.locationCode, 1);
+              }}
+              className="border border-slate-700 bg-slate-800 px-2 py-2 text-xs font-bold hover:border-blue-500"
+            >
+              Paket Ekle
+            </button>
+            <button
+              onClick={() => adjustLocationPackages(selectedLocation.locationCode, -1)}
+              className="border border-slate-700 bg-slate-800 px-2 py-2 text-xs font-bold hover:border-blue-500"
+            >
+              Paket Azalt
+            </button>
+            <button
+              onClick={() => clearLocation(selectedLocation.locationCode)}
+              className="border border-red-900 bg-red-950/40 px-2 py-2 text-xs font-bold text-red-200 hover:bg-red-900/50"
+            >
+              Lokasyonu Boşalt
+            </button>
+            <button
+              onClick={() => {
+                const target = window.prompt('Hedef lokasyon kodu', selectedLocation.locationCode);
+                if (target) moveLocationStock(selectedLocation.locationCode, target.trim().toUpperCase());
+              }}
+              className="border border-slate-700 bg-slate-800 px-2 py-2 text-xs font-bold hover:border-blue-500"
+            >
+              Başka Lokasyona Taşı
+            </button>
+            <button
+              onClick={() => {
+                const matches = generateLocationCodes()
+                  .filter((location) => selectedLocation.sku && location.sku === selectedLocation.sku)
+                  .map((location) => `${location.locationCode} ${location.currentPackages}/${location.capacityPackages}`)
+                  .join('\n');
+                window.alert(matches || 'Bu SKU için başka lokasyon bulunamadı.');
+              }}
+              className="border border-slate-700 bg-slate-800 px-2 py-2 text-xs font-bold hover:border-blue-500"
+            >
+              Aynı SKU’yu Bul
+            </button>
+            <button
+              onClick={() => setLabelMode('single')}
+              className="border border-slate-700 bg-slate-800 px-2 py-2 text-xs font-bold hover:border-blue-500"
+            >
+              Etiket Önizle
+            </button>
           </div>
         </section>
       )}
@@ -298,24 +432,15 @@ export function RightPanel() {
 
       {obj.type === 'rack' && (
         <section className="space-y-3 border-b border-slate-800 py-4">
-          <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Lokasyon Kod Sistemi</div>
-          <div className="grid grid-cols-2 gap-2">
-            <SelectInput
-              label="Format"
-              value={locationCodeSettings.format}
-              options={locationFormats.map((format) => format.value)}
-              labels={Object.fromEntries(locationFormats.map((format) => [format.value, format.label]))}
-              onChange={(value) => updateLocationCodeSettings({ format: value as LocationFormat })}
-            />
-            <TextInput label="Ayırıcı" value={locationCodeSettings.separator} onChange={(value) => updateLocationCodeSettings({ separator: value || '-' })} />
-            <TextInput label="Kat prefix" value={locationCodeSettings.shelfPrefix} onChange={(value) => updateLocationCodeSettings({ shelfPrefix: value })} />
-            <TextInput label="Göz prefix" value={locationCodeSettings.binPrefix} onChange={(value) => updateLocationCodeSettings({ binPrefix: value })} />
+          <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Ana Lokasyon Listesi</div>
+          <div className="border border-blue-900 bg-blue-950/30 p-3 text-xs text-blue-100">
+            Standart lokasyon kodu sabit: <strong>{obj.rackCode}-K2-P3</strong>. Her ana lokasyon 4 paket kapasitelidir; alt slot kodları UI’da gösterilmez.
           </div>
           <div className="max-h-44 overflow-y-auto border border-slate-800 bg-slate-950 font-mono text-[11px]">
             {locations.map((location) => (
               <div key={location.locationCode} className="flex justify-between border-b border-slate-900 px-2 py-1.5">
                 <span className="text-blue-300">{location.locationCode}</span>
-                <span className="text-slate-500">{location.qrContent}</span>
+                <span className="text-slate-500">{location.sku || 'Boş'} · {location.currentPackages}/{location.capacityPackages}</span>
               </div>
             ))}
           </div>
@@ -333,7 +458,9 @@ export function RightPanel() {
           {previewLocations.map((location) => (
             <div key={location.locationCode} className="border border-slate-700 bg-white px-2 py-1 text-slate-950">
               <div className="text-[10px] font-black">{location.locationCode}</div>
-              <div className="mt-1 text-[8px] font-mono">{location.qrContent}</div>
+              {location.sku && <div className="text-[8px] font-bold">SKU: {location.sku}</div>}
+              <div className="text-[8px] font-bold">Paket: {location.currentPackages}/{location.capacityPackages}</div>
+              <div className="mt-1 text-[8px] font-mono">{location.sku ? location.productQrContent : location.qrContent}</div>
             </div>
           ))}
         </div>
@@ -341,6 +468,38 @@ export function RightPanel() {
           Seçili ölçü: {labelSize}. HTML/CSS önizleme hazır; baskı çıktısı sonraki aşamada PDF/ZPL’ye taşınabilir.
         </div>
       </section>
+
+      {dropRequest && (
+        <div className="sticky bottom-3 z-20 border border-blue-700 bg-slate-950 p-3 shadow-2xl">
+          <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Lokasyona Paket Bırak</div>
+          <div className="mt-2 text-sm font-bold text-slate-100">{dropRequest.location.locationCode}</div>
+          <div className="text-xs text-slate-400">
+            {dropRequest.product.sku} · Maksimum boş kapasite:{' '}
+            {Math.max(dropRequest.location.capacityPackages - dropRequest.location.currentPackages, 0)}
+          </div>
+          {dropRequest.location.sku && dropRequest.location.sku !== dropRequest.product.sku && (
+            <div className="mt-2 border border-red-900 bg-red-950/40 px-2 py-2 text-xs text-red-200">
+              Bu lokasyonda farklı SKU var. Varsayılan olarak karışık SKU’ya izin verilmez.
+            </div>
+          )}
+          <NumberInput
+            label="Paket sayısı"
+            value={Number(dropRequest.count)}
+            onChange={(value) => setDropRequest((current) => current ? { ...current, count: value } : current)}
+          />
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button onClick={() => setDropRequest(null)} className="border border-slate-700 bg-slate-800 px-2 py-2 text-xs font-bold">
+              Vazgeç
+            </button>
+            <button
+              onClick={confirmDrop}
+              className="bg-blue-600 px-2 py-2 text-xs font-black uppercase tracking-wider text-white hover:bg-blue-500"
+            >
+              Yerleştir
+            </button>
+          </div>
+        </div>
+      )}
 
       <button
         onClick={() => selectObject(null)}

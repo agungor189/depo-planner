@@ -4,12 +4,13 @@ import { calculateAreaUsage, trimNumber } from '../../utils/warehouse';
 
 export function BottomBar() {
   const objects = useStore((state) => state.objects);
+  const locationStocks = useStore((state) => state.locationStocks);
   const warehouseConfig = useStore((state) => state.warehouseConfig);
   const warnings = useStore((state) => state.warnings);
   const saveStatus = useStore((state) => state.saveStatus);
   const sharedSyncStatus = useStore((state) => state.sharedSyncStatus);
   const selectedId = useStore((state) => state.selectedId);
-  const usage = calculateAreaUsage(objects, warehouseConfig);
+  const usage = calculateAreaUsage(objects, warehouseConfig, locationStocks);
   const selected = objects.find((object) => object.id === selectedId);
   const errorCount = warnings.filter((warning) => warning.severity === 'error').length;
 
@@ -27,10 +28,12 @@ export function BottomBar() {
         <span className="hidden md:inline">Alan: {trimNumber(usage.totalWarehouseArea)} m²</span>
         <span className="hidden lg:inline">Raf: {usage.rackCount}</span>
         <span className="hidden lg:inline">Lokasyon: {usage.totalLocationCount}</span>
+        <span className="hidden xl:inline">Paket: {usage.filledPackageCount}/{usage.totalPackageCapacity}</span>
       </div>
 
       <div className="flex items-center gap-4">
         <span className="hidden md:inline">Kullanım: {trimNumber(usage.utilizationPercent, 1)}%</span>
+        <span className="hidden lg:inline">Doluluk: {trimNumber(usage.packageUtilizationPercent, 1)}%</span>
         <span className="hidden lg:inline">Boş alan: {trimNumber(usage.freeArea)} m²</span>
         <span>Seçili: {selected ? (selected.type === 'rack' ? `Raf ${selected.rackCode}` : selected.name) : 'Yok'}</span>
         <span className={`flex items-center gap-1.5 ${errorCount ? 'text-red-300' : 'text-emerald-300'}`}>

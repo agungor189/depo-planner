@@ -4,13 +4,15 @@ import {
   LayoutWarning,
   LocationCode,
   LocationCodeSettings,
+  LocationStock,
   Rack,
   UnitPreference,
   WarehouseConfig,
   WarehouseObject,
 } from '../types';
 
-export const APP_VERSION = 3;
+export const APP_VERSION = 4;
+export const LOCATION_PACKAGE_CAPACITY = 4;
 
 export const DEFAULT_WAREHOUSE_CONFIG: WarehouseConfig = {
   name: 'DSDST Depo',
@@ -354,35 +356,42 @@ export function formatLocationCode(
   rack: Rack,
   shelf: number,
   bin: number,
-  settings: LocationCodeSettings,
+  _settings: LocationCodeSettings,
 ): string {
-  const separator = settings.separator || '-';
-  const shelfValue = settings.format === 'padded' ? String(shelf).padStart(2, '0') : String(shelf);
-  const binValue = settings.format === 'padded' ? String(bin).padStart(2, '0') : String(bin);
-  const binCode = `${settings.binPrefix || ''}${binValue}`;
-
-  if (settings.format === 'verbose') return `RAF-${rack.rackCode}-KAT-${shelf}-${binCode}`;
-  if (settings.format === 'slash') return `${rack.rackCode}/L${shelf}/B${String(bin).padStart(2, '0')}`;
-
-  const shelfCode = `${settings.shelfPrefix || 'K'}${shelfValue}`;
-  return [rack.rackCode, shelfCode, binCode].join(separator);
+  return `${rack.rackCode}-K${shelf}-P${bin}`;
 }
 
 export function getQrContent(locationCode: string, settings: LocationCodeSettings): string {
   return settings.qrPrefix === 'DSDST' ? `DSDST|LOC|${locationCode}` : `LOC:${locationCode}`;
 }
 
-export function generateLocationCodes(rack: Rack, settings: LocationCodeSettings): LocationCode[] {
+export function getProductQrContent(location: Pick<LocationCode, 'locationCode' | 'sku' | 'currentPackages'>): string {
+  if (!location.sku || location.currentPackages <= 0) return `LOC:${location.locationCode}`;
+  return `DSDST|LOC|${location.locationCode}|SKU|${location.sku}|PKG|${location.currentPackages}/${LOCATION_PACKAGE_CAPACITY}`;
+}
+
+export function generateLocationCodes(
+  rack: Rack,
+  settings: LocationCodeSettings,
+  locationStocks: LocationStock[] = [],
+): LocationCode[] {
   const codes: LocationCode[] = [];
   const shelves = Math.max(0, Math.floor(rack.shelfCount));
   const bins = Math.max(0, Math.floor(rack.binsPerShelf));
+  const stockByLocation = new Map(locationStocks.map((stock) => [stock.locationCode, stock]));
 
   for (let shelf = 1; shelf <= shelves; shelf += 1) {
     for (let bin = 1; bin <= bins; bin += 1) {
       const locationCode = formatLocationCode(rack, shelf, bin, settings);
-      const shelfCode = `${settings.shelfPrefix || 'K'}${settings.format === 'padded' ? String(shelf).padStart(2, '0') : shelf}`;
-      const binCode = `${settings.binPrefix || 'P'}${settings.format === 'padded' ? String(bin).padStart(2, '0') : bin}`;
-      codes.push({
+      const shelfCode = `K${shelf}`;
+      const binCode = `P${bin}`;
+      const stock = stockByLocation.get(locationCode);
+      const currentPackages = Math.min(
+        Math.max(0, Math.floor(Number(stock?.currentPackages || 0))),
+        LOCATION_PACKAGE_CAPACITY,
+      );
+      const quantityInsidePackage = Math.max(0, Number(stock?.quantityInsidePackage || 0));
+      const location: LocationCode = {
         locationCode,
         rackGroup: rack.rackGroup,
         rackNumber: rack.rackNumber,
@@ -391,6 +400,7 @@ export function generateLocationCodes(rack: Rack, settings: LocationCodeSettings
         binCode,
         shelfNumber: shelf,
         binNumber: bin,
+        positionNumber: bin,
         rackName: rack.name,
         productGroup: rack.productGroup,
         x: rack.x,
@@ -398,8 +408,21 @@ export function generateLocationCodes(rack: Rack, settings: LocationCodeSettings
         width: rack.width,
         depth: rack.depth,
         height: rack.height,
-        note: rack.note,
+        note: stock?.note || rack.note,
+        capacityPackages: LOCATION_PACKAGE_CAPACITY,
+        currentPackages,
+        sku: stock?.sku || '',
+        productName: stock?.productName || '',
+        category: stock?.category || rack.productGroup,
+        supplierCode: stock?.supplierCode || '',
+        packageQuantity: quantityInsidePackage,
+        totalItemQuantity: currentPackages * quantityInsidePackage,
         qrContent: getQrContent(locationCode, settings),
+        productQrContent: '',
+      };
+      location.productQrContent = getProductQrContent(location);
+      codes.push({
+        ...location,
       });
     }
   }
@@ -410,13 +433,18 @@ export function generateLocationCodes(rack: Rack, settings: LocationCodeSettings
 export function generateAllLocationCodes(
   objects: WarehouseObject[],
   settings: LocationCodeSettings,
+  locationStocks: LocationStock[] = [],
 ): LocationCode[] {
   return objects
     .filter((object): object is Rack => object.type === 'rack')
-    .flatMap((rack) => generateLocationCodes(rack, settings));
+    .flatMap((rack) => generateLocationCodes(rack, settings, locationStocks));
 }
 
-export function calculateAreaUsage(objects: WarehouseObject[], warehouseConfig: WarehouseConfig): AreaUsage {
+export function calculateAreaUsage(
+  objects: WarehouseObject[],
+  warehouseConfig: WarehouseConfig,
+  locationStocks: LocationStock[] = [],
+): AreaUsage {
   const totalWarehouseArea = warehouseConfig.width * warehouseConfig.length;
   const visibleObjects = objects.filter((object) => object.visible);
   const rackArea = visibleObjects
@@ -433,6 +461,14 @@ export function calculateAreaUsage(objects: WarehouseObject[], warehouseConfig: 
     .reduce((sum, object) => sum + object.width * object.depth, 0);
   const freeArea = Math.max(totalWarehouseArea - usedArea, 0);
   const racks = visibleObjects.filter((object): object is Rack => object.type === 'rack');
+  const totalLocationCount = racks.reduce((sum, rack) => sum + rack.shelfCount * rack.binsPerShelf, 0);
+  const totalPackageCapacity = totalLocationCount * LOCATION_PACKAGE_CAPACITY;
+  const filledPackageCount = locationStocks.reduce((sum, stock) => sum + Math.min(stock.currentPackages, stock.capacityPackages), 0);
+  const categoryPackageCounts = locationStocks.reduce<Record<string, number>>((totals, stock) => {
+    totals[stock.category] = (totals[stock.category] || 0) + Math.min(stock.currentPackages, stock.capacityPackages);
+    return totals;
+  }, {});
+  const totalSkuCount = new Set(locationStocks.filter((stock) => stock.currentPackages > 0).map((stock) => stock.sku)).size;
 
   return {
     totalWarehouseArea,
@@ -443,9 +479,15 @@ export function calculateAreaUsage(objects: WarehouseObject[], warehouseConfig: 
     freeArea,
     utilizationPercent: totalWarehouseArea > 0 ? (usedArea / totalWarehouseArea) * 100 : 0,
     rackCount: racks.length,
-    totalLocationCount: racks.reduce((sum, rack) => sum + rack.shelfCount * rack.binsPerShelf, 0),
+    totalLocationCount,
     packingAreaCount: visibleObjects.filter((object) => object.type === 'packing').length,
     columnCount: visibleObjects.filter((object) => object.type === 'column').length,
+    totalPackageCapacity,
+    filledPackageCount,
+    freePackageCapacity: Math.max(totalPackageCapacity - filledPackageCount, 0),
+    packageUtilizationPercent: totalPackageCapacity > 0 ? (filledPackageCount / totalPackageCapacity) * 100 : 0,
+    totalSkuCount,
+    categoryPackageCounts,
   };
 }
 
@@ -464,39 +506,33 @@ export function toCsv(rows: Array<Record<string, string | number>>, columns: str
 export function locationsToCsv(locations: LocationCode[]): string {
   const columns = [
     'locationCode',
-    'rackGroup',
-    'rackNumber',
     'rackCode',
-    'shelfCode',
-    'binCode',
     'shelfNumber',
-    'binNumber',
-    'rackName',
-    'productGroup',
-    'x',
-    'z',
-    'width',
-    'depth',
-    'height',
+    'positionNumber',
+    'capacityPackages',
+    'currentPackages',
+    'sku',
+    'productName',
+    'category',
+    'supplierCode',
+    'packageQuantity',
+    'totalItemQuantity',
     'note',
   ];
   return toCsv(
     locations.map((location) => ({
       locationCode: location.locationCode,
-      rackGroup: location.rackGroup,
-      rackNumber: location.rackNumber,
       rackCode: location.rackCode,
-      shelfCode: location.shelfCode,
-      binCode: location.binCode,
       shelfNumber: location.shelfNumber,
-      binNumber: location.binNumber,
-      rackName: location.rackName,
-      productGroup: location.productGroup,
-      x: location.x,
-      z: location.z,
-      width: location.width,
-      depth: location.depth,
-      height: location.height,
+      positionNumber: location.positionNumber,
+      capacityPackages: location.capacityPackages,
+      currentPackages: location.currentPackages,
+      sku: location.sku,
+      productName: location.productName,
+      category: location.category,
+      supplierCode: location.supplierCode,
+      packageQuantity: location.packageQuantity,
+      totalItemQuantity: location.totalItemQuantity,
       note: location.note,
     })),
     columns,
@@ -512,6 +548,7 @@ export function racksToCsv(objects: WarehouseObject[]): string {
     'shelfCount',
     'binsPerShelf',
     'totalLocations',
+    'totalPackageCapacity',
     'width',
     'depth',
     'height',
@@ -529,6 +566,7 @@ export function racksToCsv(objects: WarehouseObject[]): string {
       shelfCount: rack.shelfCount,
       binsPerShelf: rack.binsPerShelf,
       totalLocations: rack.shelfCount * rack.binsPerShelf,
+      totalPackageCapacity: rack.shelfCount * rack.binsPerShelf * LOCATION_PACKAGE_CAPACITY,
       width: rack.width,
       depth: rack.depth,
       height: rack.height,
@@ -549,6 +587,11 @@ export function summaryToCsv(areaUsage: AreaUsage): string {
     'totalLocationCount',
     'packingAreaCount',
     'columnCount',
+    'totalPackageCapacity',
+    'filledPackageCount',
+    'freePackageCapacity',
+    'packageUtilizationPercent',
+    'totalSkuCount',
   ];
 
   return toCsv(
@@ -561,6 +604,11 @@ export function summaryToCsv(areaUsage: AreaUsage): string {
         totalLocationCount: areaUsage.totalLocationCount,
         packingAreaCount: areaUsage.packingAreaCount,
         columnCount: areaUsage.columnCount,
+        totalPackageCapacity: areaUsage.totalPackageCapacity,
+        filledPackageCount: areaUsage.filledPackageCount,
+        freePackageCapacity: areaUsage.freePackageCapacity,
+        packageUtilizationPercent: roundMeters(areaUsage.packageUtilizationPercent),
+        totalSkuCount: areaUsage.totalSkuCount,
       },
     ],
     columns,

@@ -24,10 +24,12 @@ import {
   AISLE_OPTIONS,
   GRID_OPTIONS,
   buildRackCode,
+  calculateAreaUsage,
   displayMeasure,
   fromMeters,
   getNextRackNumber,
   normalizeRackGroup,
+  trimNumber,
   toMeters,
 } from '../../utils/warehouse';
 
@@ -48,19 +50,25 @@ const viewOptions: Array<{ value: ViewMode; label: string }> = [
   { value: 'TOP', label: 'Üstten' },
 ];
 
-const productGroups: ProductGroup[] = ['Alüminyum', 'Döküm', 'Karbon Çelik', 'PPR', 'Karışık'];
+const productGroups: ProductGroup[] = ['Alüminyum', 'Döküm', 'Karbon Çelik', 'PPR', 'Diğer', 'Karışık'];
 
 export function LeftPanel() {
   const warehouseConfig = useStore((state) => state.warehouseConfig);
   const unitPreference = useStore((state) => state.unitPreference);
   const gridSettings = useStore((state) => state.gridSettings);
   const objects = useStore((state) => state.objects);
+  const products = useStore((state) => state.products);
+  const locationStocks = useStore((state) => state.locationStocks);
+  const placementStatus = useStore((state) => state.placementStatus);
   const plans = useStore((state) => state.plans);
   const activePlanId = useStore((state) => state.activePlanId);
   const viewMode = useStore((state) => state.viewMode);
   const selectedId = useStore((state) => state.selectedId);
   const addObject = useStore((state) => state.addObject);
   const addRackGroup = useStore((state) => state.addRackGroup);
+  const addProduct = useStore((state) => state.addProduct);
+  const deleteProduct = useStore((state) => state.deleteProduct);
+  const autoPlaceProduct = useStore((state) => state.autoPlaceProduct);
   const selectObject = useStore((state) => state.selectObject);
   const setUnitPreference = useStore((state) => state.setUnitPreference);
   const updateWarehouseConfig = useStore((state) => state.updateWarehouseConfig);
@@ -95,6 +103,18 @@ export function LeftPanel() {
     depth: '0.6',
     height: '1.8',
     productGroup: 'Karışık' as ProductGroup,
+    note: '',
+  });
+  const [productDraft, setProductDraft] = useState({
+    sku: 'AL-125-B',
+    productName: '1 İnç 90° Dirsek',
+    supplierCode: 'AL-125-B',
+    category: 'Alüminyum' as ProductGroup,
+    packageCount: '10',
+    quantityInsidePackage: '75',
+    packageWidthCm: '36',
+    packageDepthCm: '25',
+    packageHeightCm: '25',
     note: '',
   });
 
@@ -245,6 +265,45 @@ export function LeftPanel() {
       note: rackDraft.note,
     });
   };
+
+  const handleAddProduct = () => {
+    const packageCount = Math.max(1, Math.floor(Number(productDraft.packageCount) || 1));
+    addProduct({
+      sku: productDraft.sku,
+      productName: productDraft.productName,
+      supplierCode: productDraft.supplierCode,
+      category: productDraft.category,
+      packageCount,
+      quantityInsidePackage: Math.max(0, Math.floor(Number(productDraft.quantityInsidePackage) || 0)),
+      packageWidthCm: Math.max(0, Number(productDraft.packageWidthCm) || 0),
+      packageDepthCm: Math.max(0, Number(productDraft.packageDepthCm) || 0),
+      packageHeightCm: Math.max(0, Number(productDraft.packageHeightCm) || 0),
+      note: productDraft.note,
+    });
+  };
+
+  const handleAddAndAutoPlaceProduct = () => {
+    const sku = productDraft.sku.trim().toUpperCase();
+    const packageCount = Math.max(1, Math.floor(Number(productDraft.packageCount) || 1));
+    handleAddProduct();
+    window.setTimeout(() => {
+      const product = useStore.getState().products.find((item) => item.sku === sku);
+      if (product) useStore.getState().autoPlaceProduct(product.id, packageCount);
+    }, 0);
+  };
+
+  const packagesBySku = useMemo(
+    () =>
+      locationStocks.reduce<Record<string, number>>((totals, stock) => {
+        totals[stock.sku] = (totals[stock.sku] || 0) + stock.currentPackages;
+        return totals;
+      }, {}),
+    [locationStocks],
+  );
+  const packageUsage = useMemo(
+    () => calculateAreaUsage(objects, warehouseConfig, locationStocks),
+    [objects, warehouseConfig, locationStocks],
+  );
 
   return (
     <aside className="z-10 flex w-80 shrink-0 flex-col overflow-y-auto border-r border-slate-800 bg-slate-900/95 p-4 text-slate-200">
@@ -438,6 +497,169 @@ export function LeftPanel() {
             >
               Grup Oluştur
             </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="border-b border-slate-800 py-4">
+        <div className="mb-3 flex items-center gap-2 text-[11px] font-black uppercase tracking-widest text-slate-500">
+          <PackageCheck className="h-4 w-4 text-blue-400" />
+          SKU / Ürün Listesi
+        </div>
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            <label>
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">SKU</span>
+              <input
+                value={productDraft.sku}
+                onChange={(event) => setProductDraft((current) => ({ ...current, sku: event.target.value.toUpperCase() }))}
+                className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+              />
+            </label>
+            <label>
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Tedarikçi kodu</span>
+              <input
+                value={productDraft.supplierCode}
+                onChange={(event) => setProductDraft((current) => ({ ...current, supplierCode: event.target.value.toUpperCase() }))}
+                className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+              />
+            </label>
+          </div>
+          <label>
+            <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Ürün adı</span>
+            <input
+              value={productDraft.productName}
+              onChange={(event) => setProductDraft((current) => ({ ...current, productName: event.target.value }))}
+              className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+            />
+          </label>
+          <div className="grid grid-cols-3 gap-2">
+            <label>
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Kategori</span>
+              <select
+                value={productDraft.category}
+                onChange={(event) => setProductDraft((current) => ({ ...current, category: event.target.value as ProductGroup }))}
+                className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+              >
+                {productGroups.filter((group) => group !== 'Karışık').map((group) => (
+                  <option key={group} value={group}>
+                    {group}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Paket</span>
+              <input
+                type="number"
+                min="1"
+                value={productDraft.packageCount}
+                onChange={(event) => setProductDraft((current) => ({ ...current, packageCount: event.target.value }))}
+                className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+              />
+            </label>
+            <label>
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">İç adet</span>
+              <input
+                type="number"
+                min="0"
+                value={productDraft.quantityInsidePackage}
+                onChange={(event) => setProductDraft((current) => ({ ...current, quantityInsidePackage: event.target.value }))}
+                className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+              />
+            </label>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            {(['packageWidthCm', 'packageDepthCm', 'packageHeightCm'] as const).map((field) => (
+              <label key={field}>
+                <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                  {field === 'packageWidthCm' ? 'En' : field === 'packageDepthCm' ? 'Boy' : 'Yük.'} cm
+                </span>
+                <input
+                  type="number"
+                  min="0"
+                  value={productDraft[field]}
+                  onChange={(event) => setProductDraft((current) => ({ ...current, [field]: event.target.value }))}
+                  className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+                />
+              </label>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={handleAddProduct}
+              className="flex items-center justify-center gap-2 bg-blue-600 px-3 py-2 text-xs font-black uppercase tracking-wider text-white hover:bg-blue-500"
+            >
+              <Plus className="h-4 w-4" />
+              SKU Ekle
+            </button>
+            <button
+              onClick={handleAddAndAutoPlaceProduct}
+              className="border border-emerald-800 bg-emerald-950/40 px-3 py-2 text-xs font-black uppercase tracking-wider text-emerald-100 hover:bg-emerald-900/40"
+            >
+              Otomatik Yerleştir
+            </button>
+          </div>
+          {placementStatus && <div className="border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-300">{placementStatus}</div>}
+          <div className="border border-slate-800 bg-slate-950 p-3 text-xs text-slate-300">
+            <div className="grid grid-cols-2 gap-2 font-mono">
+              <span>Ana lokasyon: {packageUsage.totalLocationCount}</span>
+              <span>Kapasite: {packageUsage.totalPackageCapacity}</span>
+              <span>Dolu paket: {packageUsage.filledPackageCount}</span>
+              <span>Boş kapasite: {packageUsage.freePackageCapacity}</span>
+              <span>Doluluk: {trimNumber(packageUsage.packageUtilizationPercent, 1)}%</span>
+              <span>SKU: {packageUsage.totalSkuCount}</span>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1">
+              {Object.entries(packageUsage.categoryPackageCounts).map(([category, count]) => (
+                <span key={category} className="border border-slate-700 px-2 py-1 text-[10px] text-slate-400">
+                  {category}: {count}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-2">
+            {products.map((product) => (
+              <div
+                key={product.id}
+                draggable
+                onDragStart={(event) => event.dataTransfer.setData('application/dsdst-product-id', product.id)}
+                className="border border-slate-800 bg-slate-950 p-3 text-xs text-slate-300"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="font-mono text-sm font-black text-blue-200">{product.sku}</div>
+                    <div className="truncate font-semibold text-slate-100">{product.productName}</div>
+                    <div className="mt-1 text-slate-500">{product.category} · {product.supplierCode}</div>
+                  </div>
+                  <button
+                    title="Ürün kartını sil"
+                    onClick={() => deleteProduct(product.id)}
+                    className="shrink-0 border border-red-900 bg-red-950/30 p-1 text-red-200 hover:bg-red-900/50"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-[11px] text-slate-400">
+                  <span>Paket: {product.packageCount}</span>
+                  <span>Yerleşen: {packagesBySku[product.sku] || 0}</span>
+                  <span>İç adet: {product.quantityInsidePackage}</span>
+                  <span>Toplam: {(packagesBySku[product.sku] || 0) * product.quantityInsidePackage}</span>
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <span className="text-[10px] text-slate-500">
+                    {product.packageWidthCm} x {product.packageDepthCm} x {product.packageHeightCm} cm
+                  </span>
+                  <button
+                    onClick={() => autoPlaceProduct(product.id, product.packageCount)}
+                    className="border border-emerald-800 px-2 py-1 text-[10px] font-black uppercase text-emerald-200 hover:bg-emerald-950"
+                  >
+                    Otomatik Yerleştir
+                  </button>
+                </div>
+              </div>
+            ))}
+            {products.length === 0 && <div className="border border-slate-800 bg-slate-950 p-3 text-xs text-slate-500">Henüz SKU eklenmedi.</div>}
           </div>
         </div>
       </section>
