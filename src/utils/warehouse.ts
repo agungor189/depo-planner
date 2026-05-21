@@ -31,6 +31,8 @@ export const DEFAULT_GRID_SETTINGS: GridSettings = {
   showMeasurements: true,
   showAccessZones: true,
   minimumAisleWidth: 0.8,
+  showPackages3D: true,
+  packageColorMode: 'category',
 };
 
 export const DEFAULT_LOCATION_SETTINGS: LocationCodeSettings = {

@@ -21,7 +21,7 @@ import {
   Warehouse,
 } from 'lucide-react';
 import { useStore } from '../../store/useStore';
-import { ProductGroup, UnitPreference, ViewMode, WarehouseObjectNoId } from '../../types';
+import { PackageColorMode, ProductGroup, UnitPreference, ViewMode, WarehouseObjectNoId } from '../../types';
 import {
   AISLE_OPTIONS,
   GRID_OPTIONS,
@@ -53,6 +53,14 @@ const viewOptions: Array<{ value: ViewMode; label: string }> = [
 ];
 
 const productGroups: ProductGroup[] = ['Alüminyum', 'Döküm', 'Karbon Çelik', 'PPR', 'Diğer', 'Karışık'];
+
+const packageColorModes: Array<{ value: PackageColorMode; label: string }> = [
+  { value: 'category', label: 'Kategori' },
+  { value: 'material', label: 'Malzeme' },
+  { value: 'type', label: 'Tip' },
+  { value: 'dimension', label: 'Ölçü' },
+  { value: 'sku', label: 'SKU' },
+];
 
 export function LeftPanel() {
   const warehouseConfig = useStore((state) => state.warehouseConfig);
@@ -966,6 +974,7 @@ export function LeftPanel() {
           <Toggle label="Duvarlar" checked={gridSettings.showWalls} onChange={(checked) => updateGridSettings({ showWalls: checked })} />
           <Toggle label="Ölçüler" checked={gridSettings.showMeasurements} onChange={(checked) => updateGridSettings({ showMeasurements: checked })} />
           <Toggle label="Erişim alanı" checked={gridSettings.showAccessZones} onChange={(checked) => updateGridSettings({ showAccessZones: checked })} />
+          <Toggle label="3D paketler" checked={gridSettings.showPackages3D !== false} onChange={(checked) => updateGridSettings({ showPackages3D: checked })} />
         </div>
         <div className="mt-3 grid grid-cols-2 gap-2">
           <label>
@@ -990,6 +999,20 @@ export function LeftPanel() {
               className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
             >
               {AISLE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="col-span-2">
+            <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">3D paket renk kodu</span>
+            <select
+              value={gridSettings.packageColorMode || 'category'}
+              onChange={(event) => updateGridSettings({ packageColorMode: event.target.value as PackageColorMode })}
+              className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+            >
+              {packageColorModes.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>

@@ -23,6 +23,8 @@ export type ProductGroup =
 
 export type LocationFormat = 'standard' | 'padded' | 'verbose' | 'slash';
 
+export type PackageColorMode = 'category' | 'material' | 'type' | 'dimension' | 'sku';
+
 export interface WarehouseConfig {
   name: string;
   width: number;
@@ -39,6 +41,8 @@ export interface GridSettings {
   showMeasurements: boolean;
   showAccessZones: boolean;
   minimumAisleWidth: number;
+  showPackages3D: boolean;
+  packageColorMode: PackageColorMode;
 }
 
 export interface LocationCodeSettings {
@@ -193,6 +197,9 @@ export interface PackageRecord {
   boxDepthCm: number;
   boxHeightCm: number;
   weightKg: number;
+  material?: string;
+  type?: string;
+  dimensionsLabel?: string;
   locationCode: string;
   status: string;
   createdAt: string;

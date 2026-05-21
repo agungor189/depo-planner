@@ -12,7 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { useStore } from '../../store/useStore';
-import { LocationCode, ProductGroup, Rack, WarehouseImportedPackage } from '../../types';
+import { LocationCode, PackageColorMode, ProductGroup, Rack, WarehouseImportedPackage } from '../../types';
 
 type PackageFilter = 'unplaced' | 'rack' | 'placed' | 'all';
 type RackFaceSide = 'front' | 'back';
@@ -25,6 +25,14 @@ const categoryClasses: Record<ProductGroup, string> = {
   Karışık: 'border-amber-700 bg-amber-950/40 text-amber-100',
   Diğer: 'border-slate-700 bg-slate-900 text-slate-100',
 };
+
+const packageColorModes: Array<{ value: PackageColorMode; label: string }> = [
+  { value: 'category', label: 'Kategori' },
+  { value: 'material', label: 'Malzeme' },
+  { value: 'type', label: 'Tip' },
+  { value: 'dimension', label: 'Ölçü' },
+  { value: 'sku', label: 'SKU' },
+];
 
 function packageHaystack(item: WarehouseImportedPackage) {
   return [
@@ -110,21 +118,21 @@ function RackFaceGrid({
   };
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col border border-slate-800 bg-slate-900/40">
-      <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col border border-slate-800 bg-slate-900/40">
+      <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
         <div>
           <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">
             {side === 'front' ? 'Paket dizilimi önden başlar' : 'Aynı rafın arka kapasitesi'}
           </div>
-          <h2 className="text-lg font-black text-slate-100">{title}</h2>
+          <h2 className="text-base font-black text-slate-100">{title}</h2>
         </div>
         <div className="font-mono text-xs text-slate-500">{rack.rackCode}</div>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-4">
-        <div className="space-y-3">
+      <div className="min-h-0 flex-1 overflow-hidden p-2">
+        <div className="space-y-1.5">
           {shelves.map((shelfNumber) => (
-            <div key={`${side}-${shelfNumber}`} className="grid gap-2" style={{ gridTemplateColumns: `64px repeat(${positionCount}, minmax(112px, 1fr))` }}>
-              <div className="flex items-center justify-center border border-slate-800 bg-slate-950 font-mono text-sm font-black text-blue-200">
+            <div key={`${side}-${shelfNumber}`} className="grid gap-1" style={{ gridTemplateColumns: `42px repeat(${positionCount}, minmax(0, 1fr))` }}>
+              <div className="flex min-w-0 items-center justify-center border border-slate-800 bg-slate-950 font-mono text-xs font-black text-blue-200">
                 K{shelfNumber}
               </div>
               {Array.from({ length: positionCount }, (_, index) => {
@@ -144,25 +152,25 @@ function RackFaceGrid({
                     onClick={() => onSelectLocation(location)}
                     onDragOver={(event) => event.preventDefault()}
                     onDrop={(event) => handleDrop(event, location)}
-                    className={`min-h-28 border p-2 text-left transition-colors ${cellClass(location, selected, highlighted || selectedPackageInside)} ${
+                    className={`min-h-20 min-w-0 border p-1.5 text-left transition-colors ${cellClass(location, selected, highlighted || selectedPackageInside)} ${
                       muted ? 'opacity-45' : ''
                     }`}
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="font-mono text-sm font-black">{location.locationCode}</div>
-                      <div className="shrink-0 font-mono text-xs font-black">
+                    <div className="flex min-w-0 items-start justify-between gap-1">
+                      <div className="min-w-0 truncate font-mono text-[10px] font-black">{location.locationCode}</div>
+                      <div className="shrink-0 font-mono text-[10px] font-black">
                         {usage.current}/{usage.capacity || 0}
                       </div>
                     </div>
-                    <div className="mt-2 truncate text-xs font-bold">
+                    <div className="mt-1 truncate text-[10px] font-bold">
                       {usage.capacity === 0 ? 'Arka slot yok' : location.sku || 'Boş'}
                     </div>
-                    <div className="truncate text-[11px] text-slate-400">{location.productName || '0 paket'}</div>
-                    <div className="mt-2 flex min-h-6 flex-wrap gap-1">
-                      {usage.packages.slice(0, 3).map((item) => (
+                    <div className="truncate text-[10px] text-slate-400">{location.productName || '0 paket'}</div>
+                    <div className="mt-1 flex min-h-5 flex-wrap gap-1">
+                      {usage.packages.slice(0, 2).map((item) => (
                         <span
                           key={item.packageId}
-                          className={`border px-1.5 py-0.5 font-mono text-[10px] ${
+                          className={`max-w-full truncate border px-1 py-0.5 font-mono text-[9px] ${
                             item.packageId === selectedPackageId || highlightedPackageIds.includes(item.packageId)
                               ? 'border-amber-300 bg-amber-900/60 text-amber-50'
                               : 'border-slate-700 bg-slate-950/70 text-slate-300'
@@ -171,7 +179,7 @@ function RackFaceGrid({
                           {item.packageId}
                         </span>
                       ))}
-                      {usage.packages.length > 3 && <span className="text-[10px] text-slate-400">+{usage.packages.length - 3}</span>}
+                      {usage.packages.length > 2 && <span className="text-[9px] text-slate-400">+{usage.packages.length - 2}</span>}
                     </div>
                   </button>
                 );
@@ -188,12 +196,16 @@ function PackageCard({
   item,
   selected,
   highlighted,
+  bulkSelected,
+  onToggleBulk,
   onSelect,
   onFocus,
 }: {
   item: WarehouseImportedPackage;
   selected: boolean;
   highlighted: boolean;
+  bulkSelected: boolean;
+  onToggleBulk: (checked: boolean) => void;
   onSelect: () => void;
   onFocus: () => void;
 }) {
@@ -209,6 +221,15 @@ function PackageCard({
       onDragStart={(event) => event.dataTransfer.setData('text/plain', item.packageId)}
       className={`border p-3 text-xs ${selected ? 'ring-2 ring-blue-400' : ''} ${statusClass}`}
     >
+      <label className="mb-2 flex items-center gap-2 text-[11px] font-black uppercase tracking-widest text-slate-500">
+        <input
+          type="checkbox"
+          checked={bulkSelected}
+          onChange={(event) => onToggleBulk(event.target.checked)}
+          className="h-4 w-4 accent-blue-600"
+        />
+        Toplu işlem
+      </label>
       <button type="button" onClick={onSelect} className="block w-full text-left">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -242,6 +263,8 @@ function PackageCard({
 export function RackWorkspace() {
   const activeRackWorkspaceId = useStore((state) => state.activeRackWorkspaceId);
   const closeRackWorkspace = useStore((state) => state.closeRackWorkspace);
+  const gridSettings = useStore((state) => state.gridSettings);
+  const updateGridSettings = useStore((state) => state.updateGridSettings);
   const objects = useStore((state) => state.objects);
   const generateLocationCodes = useStore((state) => state.generateLocationCodes);
   const selectedLocationCode = useStore((state) => state.selectedLocationCode);
@@ -254,6 +277,8 @@ export function RackWorkspace() {
   const highlightedPackageIds = useStore((state) => state.highlightedPackageIds);
   const placeImportedPackage = useStore((state) => state.placeImportedPackage);
   const unplaceImportedPackage = useStore((state) => state.unplaceImportedPackage);
+  const unplaceImportedPackages = useStore((state) => state.unplaceImportedPackages);
+  const deleteImportedPackages = useStore((state) => state.deleteImportedPackages);
   const clearLocation = useStore((state) => state.clearLocation);
   const importPackagesExport = useStore((state) => state.importPackagesExport);
   const addManualPackage = useStore((state) => state.addManualPackage);
@@ -261,6 +286,7 @@ export function RackWorkspace() {
   const packagePlacementStatus = useStore((state) => state.packagePlacementStatus);
   const packageInputRef = useRef<HTMLInputElement>(null);
   const [filter, setFilter] = useState<PackageFilter>('unplaced');
+  const [selectedBulkIds, setSelectedBulkIds] = useState<string[]>([]);
   const [manualDraft, setManualDraft] = useState({
     sku: '',
     productName: '',
@@ -302,6 +328,11 @@ export function RackWorkspace() {
       });
   }, [filter, importedPackages, packageSearchQuery, rack?.rackCode, rackPackageIds]);
 
+  const visiblePackageIds = useMemo(() => visiblePackages.map((item) => item.packageId), [visiblePackages]);
+  const rackPackageIdList = useMemo(() => rackPackages.map((item) => item.packageId), [rackPackages]);
+  const allPackageIds = useMemo(() => importedPackages.map((item) => item.packageId), [importedPackages]);
+  const selectedBulkSet = useMemo(() => new Set(selectedBulkIds), [selectedBulkIds]);
+
   const totals = useMemo(() => {
     const capacity = locations.reduce((sum, location) => sum + location.capacityPackages, 0);
     const filled = locations.reduce((sum, location) => sum + location.currentPackages, 0);
@@ -332,6 +363,32 @@ export function RackWorkspace() {
     selectLocation(location.locationCode);
     selectPackage(packageId);
     placeImportedPackage(packageId, location.locationCode);
+  };
+
+  const toggleBulkPackage = (packageId: string, checked: boolean) => {
+    setSelectedBulkIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(packageId);
+      else next.delete(packageId);
+      return Array.from(next);
+    });
+  };
+
+  const selectPackageIds = (packageIds: string[]) => {
+    setSelectedBulkIds(Array.from(new Set(packageIds)));
+  };
+
+  const handleBulkUnplace = () => {
+    unplaceImportedPackages(selectedBulkIds);
+    setSelectedBulkIds([]);
+  };
+
+  const handleBulkDelete = () => {
+    if (selectedBulkIds.length === 0) return;
+    const confirmed = window.confirm(`${selectedBulkIds.length} paket listeden tamamen silinsin mi?`);
+    if (!confirmed) return;
+    deleteImportedPackages(selectedBulkIds);
+    setSelectedBulkIds([]);
   };
 
   const handleLocationClick = (location: LocationCode) => {
@@ -421,7 +478,7 @@ export function RackWorkspace() {
         </div>
       </header>
 
-      <main className="grid min-h-0 flex-1 grid-cols-[360px_minmax(620px,1fr)_380px] gap-4 overflow-hidden p-4">
+      <main className="grid min-h-0 flex-1 grid-cols-[300px_minmax(0,1fr)_320px] gap-3 overflow-hidden p-3">
         <aside className="flex min-h-0 flex-col border border-slate-800 bg-slate-900/40">
           <div className="border-b border-slate-800 p-4">
             <div className="mb-3 flex items-center justify-between gap-2">
@@ -469,6 +526,77 @@ export function RackWorkspace() {
                   {label}
                 </button>
               ))}
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
+              <label className="flex items-center justify-between gap-2 border border-slate-800 bg-slate-950 px-2 py-2 font-bold text-slate-300">
+                <span>3D paketler</span>
+                <input
+                  type="checkbox"
+                  checked={gridSettings.showPackages3D !== false}
+                  onChange={(event) => updateGridSettings({ showPackages3D: event.target.checked })}
+                  className="h-4 w-4 accent-blue-600"
+                />
+              </label>
+              <label>
+                <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Renk kodu</span>
+                <select
+                  value={gridSettings.packageColorMode || 'category'}
+                  onChange={(event) => updateGridSettings({ packageColorMode: event.target.value as PackageColorMode })}
+                  className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-xs outline-none focus:border-blue-500"
+                >
+                  {packageColorModes.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-black">
+              <button
+                type="button"
+                onClick={() => selectPackageIds(allPackageIds)}
+                className="border border-slate-700 bg-slate-900 px-2 py-2 text-slate-200 hover:border-blue-500"
+              >
+                Tüm Paketleri Seç
+              </button>
+              <button
+                type="button"
+                onClick={() => selectPackageIds(visiblePackageIds)}
+                className="border border-slate-700 bg-slate-900 px-2 py-2 text-slate-200 hover:border-blue-500"
+              >
+                Görünenleri Seç
+              </button>
+              <button
+                type="button"
+                onClick={() => selectPackageIds(rackPackageIdList)}
+                className="border border-slate-700 bg-slate-900 px-2 py-2 text-slate-200 hover:border-blue-500"
+              >
+                Bu Rafı Seç
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedBulkIds([])}
+                className="border border-slate-700 bg-slate-900 px-2 py-2 text-slate-400 hover:border-blue-500 hover:text-white"
+              >
+                Seçimi Temizle
+              </button>
+              <button
+                type="button"
+                disabled={selectedBulkIds.length === 0}
+                onClick={handleBulkUnplace}
+                className="border border-amber-800 bg-amber-950/35 px-2 py-2 text-amber-100 hover:bg-amber-900/40 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Raftan Çıkar ({selectedBulkIds.length})
+              </button>
+              <button
+                type="button"
+                disabled={selectedBulkIds.length === 0}
+                onClick={handleBulkDelete}
+                className="border border-red-900 bg-red-950/40 px-2 py-2 text-red-100 hover:bg-red-900/50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Toplu Sil ({selectedBulkIds.length})
+              </button>
             </div>
           </div>
 
@@ -533,6 +661,8 @@ export function RackWorkspace() {
                   item={item}
                   selected={selectedPackageId === item.packageId}
                   highlighted={highlightedPackageIds.includes(item.packageId)}
+                  bulkSelected={selectedBulkSet.has(item.packageId)}
+                  onToggleBulk={(checked) => toggleBulkPackage(item.packageId, checked)}
                   onSelect={() => selectPackage(item.packageId)}
                   onFocus={() => focusPackage(item.packageId)}
                 />
@@ -546,8 +676,8 @@ export function RackWorkspace() {
           </div>
         </aside>
 
-        <section className="flex min-h-0 flex-col gap-4">
-          <div className="grid shrink-0 grid-cols-4 gap-2 text-xs">
+        <section className="flex min-h-0 min-w-0 flex-col gap-3">
+          <div className="grid shrink-0 grid-cols-4 gap-2 text-[11px]">
             <div className="border border-slate-800 bg-slate-900 p-3">
               <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Raf Tipi</div>
               <div className="font-mono text-blue-100">{rack.shelfCount} kat x {rack.positionsPerShelf} göz</div>
@@ -565,7 +695,7 @@ export function RackWorkspace() {
               <div className="font-mono text-blue-100">{rackPackages.length} gerçek paket</div>
             </div>
           </div>
-          <div className="grid min-h-0 flex-1 grid-cols-2 gap-4">
+          <div className="grid min-h-0 min-w-0 flex-1 grid-cols-2 gap-3">
             <RackFaceGrid
               rack={rack}
               side="front"

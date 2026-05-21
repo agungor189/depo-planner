@@ -3,7 +3,7 @@ import { ThreeEvent } from '@react-three/fiber';
 import { Text, TransformControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../../../store/useStore';
-import { LocationCode, ProductGroup, Rack, WarehouseObject } from '../../../types';
+import { LocationCode, PackageColorMode, PackageRecord, ProductGroup, Rack, WarehouseObject } from '../../../types';
 import { clampObjectToWarehouse, displayMeasure, getFootprint, getObjectLabel, getRackPositionCount } from '../../../utils/warehouse';
 
 function planToScene(
@@ -150,6 +150,25 @@ const packageColors: Record<ProductGroup, string> = {
   Diğer: '#94a3b8',
 };
 
+const colorPalette = ['#38bdf8', '#a78bfa', '#34d399', '#f59e0b', '#fb7185', '#22d3ee', '#eab308', '#c084fc', '#f97316'];
+
+function hashColor(value: string) {
+  const key = value || 'Diğer';
+  let hash = 0;
+  for (let index = 0; index < key.length; index += 1) {
+    hash = (hash * 31 + key.charCodeAt(index)) % 9973;
+  }
+  return colorPalette[Math.abs(hash) % colorPalette.length];
+}
+
+function packageColor(item: PackageRecord, mode: PackageColorMode) {
+  if (mode === 'category') return packageColors[item.category] || packageColors.Diğer;
+  if (mode === 'material') return hashColor(item.material || item.category);
+  if (mode === 'type') return hashColor(item.type || item.sku);
+  if (mode === 'dimension') return hashColor(item.dimensionsLabel || `${item.boxWidthCm}x${item.boxDepthCm}x${item.boxHeightCm}`);
+  return hashColor(item.sku);
+}
+
 function RackLocationCell({
   rack,
   location,
@@ -157,6 +176,8 @@ function RackLocationCell({
   topLike,
   selectedPackageId,
   highlightedPackageIds,
+  showPackages3D,
+  packageColorMode,
   onClick,
 }: {
   rack: Rack;
@@ -165,6 +186,8 @@ function RackLocationCell({
   topLike: boolean;
   selectedPackageId: string | null;
   highlightedPackageIds: string[];
+  showPackages3D: boolean;
+  packageColorMode: PackageColorMode;
   onClick: (event: ThreeEvent<PointerEvent>, location: LocationCode) => void;
 }) {
   const cellWidth = rack.width / Math.max(1, positionCount);
@@ -175,9 +198,6 @@ function RackLocationCell({
   const depthSlots = Math.max(1, Math.floor(Number(rack.depthSlots || 1)));
   const stackLevels = Math.max(1, Math.floor(Number(rack.stackLevels || 1)));
   const slotDepth = rack.depth / depthSlots;
-  const blockWidth = Math.max(0.05, cellWidth * 0.58);
-  const blockDepth = Math.max(0.05, slotDepth * 0.55);
-  const blockHeight = topLike ? 0.06 : Math.max(0.06, Math.min(0.18, shelfHeight * 0.32));
   const hasHighlight = packages.some((item) => highlightedPackageIds.includes(item.packageId));
   const hasSelected = Boolean(selectedPackageId && packages.some((item) => item.packageId === selectedPackageId));
 
@@ -191,20 +211,25 @@ function RackLocationCell({
         <meshBasicMaterial transparent opacity={0.02} color={hasSelected || hasHighlight ? '#facc15' : '#ffffff'} />
       </mesh>
 
-      {packages.map((item, index) => {
+      {showPackages3D && packages.map((item, index) => {
         const depthIndex = Math.floor(index / stackLevels) % depthSlots;
         const stackIndex = index % stackLevels;
-        const z = -rack.depth / 2 + (depthIndex + 0.5) * slotDepth;
+        const packageWidth = Math.max(0.04, Number(item.boxWidthCm || 36) / 100);
+        const packageDepth = Math.max(0.04, Number(item.boxDepthCm || 25) / 100);
+        const packageHeight = Math.max(0.04, Number(item.boxHeightCm || 25) / 100);
+        const renderHeight = topLike ? 0.06 : packageHeight;
+        const slotStart = -rack.depth / 2 + depthIndex * slotDepth;
+        const z = slotStart + Math.min(slotDepth, packageDepth) / 2 + Math.max(0, (slotDepth - packageDepth) / 2);
         const y = topLike
           ? 0.22 + index * 0.012
-          : shelfBase + blockHeight / 2 + 0.05 + stackIndex * (blockHeight + 0.025);
+          : shelfBase + renderHeight / 2 + 0.05 + stackIndex * (renderHeight + 0.02);
         const selectedPackage = selectedPackageId === item.packageId;
         const highlighted = highlightedPackageIds.includes(item.packageId);
-        const color = selectedPackage ? '#facc15' : highlighted ? '#fb7185' : packageColors[item.category] || '#94a3b8';
+        const color = selectedPackage ? '#facc15' : highlighted ? '#fb7185' : packageColor(item, packageColorMode);
 
         return (
           <mesh key={item.packageId} position={[x, y, z]} castShadow receiveShadow>
-            <boxGeometry args={[blockWidth, blockHeight, blockDepth]} />
+            <boxGeometry args={[packageWidth, renderHeight, packageDepth]} />
             <meshStandardMaterial
               color={color}
               emissive={selectedPackage || highlighted ? color : '#000000'}
@@ -291,6 +316,8 @@ function RackVisual({ rack, selected }: { rack: Rack; selected: boolean }) {
           topLike={topLike}
           selectedPackageId={selectedPackageId}
           highlightedPackageIds={highlightedPackageIds}
+          showPackages3D={gridSettings.showPackages3D !== false}
+          packageColorMode={gridSettings.packageColorMode || 'category'}
           onClick={handleCellClick}
         />
       ))}

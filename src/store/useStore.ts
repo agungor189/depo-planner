@@ -117,6 +117,8 @@ interface StoreState {
   setPackageSearchQuery: (query: string) => void;
   placeImportedPackage: (packageId: string, locationCode: string) => void;
   unplaceImportedPackage: (packageId: string) => void;
+  unplaceImportedPackages: (packageIds: string[]) => void;
+  deleteImportedPackages: (packageIds: string[]) => void;
   focusPackage: (packageId: string) => void;
   clearPackageHighlights: () => void;
   selectLocation: (locationCode: string | null) => void;
@@ -410,6 +412,9 @@ function packageRecordFromImported(item: WarehouseImportedPackage, locationCode:
     boxDepthCm: item.boxDepthCm,
     boxHeightCm: item.boxHeightCm,
     weightKg: item.weightKg,
+    material: item.material,
+    type: item.type,
+    dimensionsLabel: item.dimensionsLabel || `${item.boxWidthCm} x ${item.boxDepthCm} x ${item.boxHeightCm} cm`,
     locationCode,
     status: 'placed',
     createdAt: now(),
@@ -462,6 +467,9 @@ function normalizePackageRecord(raw: Partial<PackageRecord>, fallbackSku?: strin
     boxDepthCm: Math.max(0, Number(raw.boxDepthCm || 25)),
     boxHeightCm: Math.max(0, Number(raw.boxHeightCm || 25)),
     weightKg: Math.max(0, Number(raw.weightKg || 0)),
+    material: raw.material || '',
+    type: raw.type || '',
+    dimensionsLabel: raw.dimensionsLabel || '',
     locationCode: raw.locationCode || '',
     status: raw.status || 'pending',
     createdAt: raw.createdAt || now(),
@@ -485,6 +493,9 @@ function createPackageRecords(product: ProductItem, count: number, locationCode:
       boxDepthCm: product.boxDepthCm,
       boxHeightCm: product.boxHeightCm,
       weightKg: product.weightKg,
+      material: product.category,
+      type: product.category,
+      dimensionsLabel: `${product.boxWidthCm} x ${product.boxDepthCm} x ${product.boxHeightCm} cm`,
       locationCode,
       status: 'placed',
       createdAt: now(),
@@ -2241,6 +2252,70 @@ export const useStore = create<StoreState>((set, get) => {
         highlightedPackageIds: [packageId],
         focusedLocationCode: null,
         packagePlacementStatus: `${item.packageId} yerleşimi kaldırıldı.`,
+      });
+    }),
+
+    unplaceImportedPackages: (packageIds) => set((state) => {
+      const targetIds = new Set(packageIds);
+      if (targetIds.size === 0) return { packagePlacementStatus: 'Paket seçilmedi.' };
+      const affectedCount = state.importedPackages.filter((item) => targetIds.has(item.packageId)).length;
+      if (affectedCount === 0) return { packagePlacementStatus: 'Seçili paketler bulunamadı.' };
+
+      const locationStocks = state.locationStocks
+        .map((stock) => {
+          const packages = stock.packages || [];
+          if (!packages.some((item) => targetIds.has(item.packageId))) return stock;
+          const nextPackages = packages.filter((item) => !targetIds.has(item.packageId));
+          return nextPackages.length > 0
+            ? {
+                ...stock,
+                packages: nextPackages,
+                currentPackages: Math.min(stock.capacityPackages, nextPackages.length),
+              }
+            : null;
+        })
+        .filter(Boolean) as LocationStock[];
+
+      const importedPackages = state.importedPackages.map((item) =>
+        targetIds.has(item.packageId) ? { ...item, status: 'unplaced' as const, placement: null } : item,
+      );
+
+      return savePlanInState(state, {
+        locationStocks,
+        importedPackages,
+        selectedPackageId: state.selectedPackageId && targetIds.has(state.selectedPackageId) ? null : state.selectedPackageId,
+        highlightedPackageIds: state.highlightedPackageIds.filter((packageId) => !targetIds.has(packageId)),
+        packagePlacementStatus: `${affectedCount} paket raftan çıkarıldı.`,
+      });
+    }),
+
+    deleteImportedPackages: (packageIds) => set((state) => {
+      const targetIds = new Set(packageIds);
+      if (targetIds.size === 0) return { packagePlacementStatus: 'Paket seçilmedi.' };
+      const deletedCount = state.importedPackages.filter((item) => targetIds.has(item.packageId)).length;
+      if (deletedCount === 0) return { packagePlacementStatus: 'Seçili paketler bulunamadı.' };
+
+      const locationStocks = state.locationStocks
+        .map((stock) => {
+          const packages = stock.packages || [];
+          if (!packages.some((item) => targetIds.has(item.packageId))) return stock;
+          const nextPackages = packages.filter((item) => !targetIds.has(item.packageId));
+          return nextPackages.length > 0
+            ? {
+                ...stock,
+                packages: nextPackages,
+                currentPackages: Math.min(stock.capacityPackages, nextPackages.length),
+              }
+            : null;
+        })
+        .filter(Boolean) as LocationStock[];
+
+      return savePlanInState(state, {
+        locationStocks,
+        importedPackages: state.importedPackages.filter((item) => !targetIds.has(item.packageId)),
+        selectedPackageId: state.selectedPackageId && targetIds.has(state.selectedPackageId) ? null : state.selectedPackageId,
+        highlightedPackageIds: state.highlightedPackageIds.filter((packageId) => !targetIds.has(packageId)),
+        packagePlacementStatus: `${deletedCount} paket listeden silindi.`,
       });
     }),
 
