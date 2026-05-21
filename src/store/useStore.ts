@@ -75,6 +75,7 @@ interface StoreState {
   packageSearchQuery: string;
   highlightedPackageIds: string[];
   focusedLocationCode: string | null;
+  activeRackWorkspaceId: string | null;
   selectedId: string | null;
   viewMode: ViewMode;
   plans: PlanSummary[];
@@ -111,6 +112,7 @@ interface StoreState {
   applyRackCapacity: (rackId: string, mode: 'all' | 'empty' | 'preserve') => void;
   importPackageManifest: (csvString: string) => boolean;
   importPackagesExport: (jsonText: string) => PackageImportResult;
+  addManualPackage: (packageData: Partial<WarehouseImportedPackage>) => void;
   selectPackage: (packageId: string | null) => void;
   setPackageSearchQuery: (query: string) => void;
   placeImportedPackage: (packageId: string, locationCode: string) => void;
@@ -118,6 +120,8 @@ interface StoreState {
   focusPackage: (packageId: string) => void;
   clearPackageHighlights: () => void;
   selectLocation: (locationCode: string | null) => void;
+  openRackWorkspace: (rackId: string) => void;
+  closeRackWorkspace: () => void;
   addObject: (obj: WarehouseObjectNoId) => void;
   addRackGroup: (options: {
     rackGroup: string;
@@ -1232,6 +1236,7 @@ function stateFromPlan(
       packageSearchQuery: '',
       highlightedPackageIds: [],
       focusedLocationCode: null,
+      activeRackWorkspaceId: null,
       selectedId: null,
       plans: planSummaries(plans),
       activePlanId: null,
@@ -1260,6 +1265,7 @@ function stateFromPlan(
     packageSearchQuery: '',
     highlightedPackageIds: [],
     focusedLocationCode: null,
+    activeRackWorkspaceId: null,
     selectedId: null,
     plans: planSummaries(plans),
     activePlanId: plan.id,
@@ -1367,6 +1373,7 @@ export const useStore = create<StoreState>((set, get) => {
     packageSearchQuery: '',
     highlightedPackageIds: [],
     focusedLocationCode: null,
+    activeRackWorkspaceId: null,
     selectedId: null,
     viewMode: '2D',
     plans: planSummaries(persistedData.plans),
@@ -1427,6 +1434,7 @@ export const useStore = create<StoreState>((set, get) => {
         packageSearchQuery: '',
         highlightedPackageIds: [],
         focusedLocationCode: null,
+        activeRackWorkspaceId: null,
         selectedId: null,
         plans: planSummaries(plans),
         activePlanId: plan.id,
@@ -1462,6 +1470,7 @@ export const useStore = create<StoreState>((set, get) => {
         packageSearchQuery: '',
         highlightedPackageIds: [],
         focusedLocationCode: null,
+        activeRackWorkspaceId: null,
         selectedId: null,
         plans: planSummaries(plans),
         activePlanId: plan.id,
@@ -1484,6 +1493,7 @@ export const useStore = create<StoreState>((set, get) => {
         packageSearchQuery: '',
         highlightedPackageIds: [],
         focusedLocationCode: null,
+        activeRackWorkspaceId: null,
         selectedId: null,
       });
       return { ...next, saveStatus: 'Plan sıfırlandı', sharedSyncStatus: 'Ortak kayda yazılıyor' };
@@ -1525,6 +1535,7 @@ export const useStore = create<StoreState>((set, get) => {
         packageSearchQuery: '',
         highlightedPackageIds: [],
         focusedLocationCode: null,
+        activeRackWorkspaceId: null,
         selectedId: null,
         plans: planSummaries(plans),
         activePlanId: copy.id,
@@ -1557,6 +1568,7 @@ export const useStore = create<StoreState>((set, get) => {
           packageSearchQuery: '',
           highlightedPackageIds: [],
           focusedLocationCode: null,
+          activeRackWorkspaceId: null,
           selectedId: null,
           plans: [],
           activePlanId: null,
@@ -1582,6 +1594,7 @@ export const useStore = create<StoreState>((set, get) => {
         packageSearchQuery: '',
         highlightedPackageIds: [],
         focusedLocationCode: null,
+        activeRackWorkspaceId: null,
         selectedId: null,
         plans: planSummaries(plans),
         activePlanId: nextActive.id,
@@ -1612,6 +1625,7 @@ export const useStore = create<StoreState>((set, get) => {
         packageSearchQuery: '',
         highlightedPackageIds: [],
         focusedLocationCode: null,
+        activeRackWorkspaceId: null,
         selectedId: null,
         activePlanId: plan.id,
         hasActivePlan: true,
@@ -2088,6 +2102,34 @@ export const useStore = create<StoreState>((set, get) => {
       }
     },
 
+    addManualPackage: (packageData) => set((state) => {
+      if (!state.hasActivePlan) return { packagePlacementStatus: 'Önce bir depo planı oluşturun veya örnek plan yükleyin.' };
+
+      const generatedId = `MAN-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${Math.floor(Math.random() * 900 + 100)}`;
+      const normalized = normalizeImportedPackage(
+        {
+          ...packageData,
+          packageId: packageData.packageId || generatedId,
+          status: 'unplaced',
+          placement: null,
+        },
+        now(),
+        true,
+      );
+
+      if (!normalized) return { packagePlacementStatus: 'Paket ID oluşturulamadı.' };
+      if (state.importedPackages.some((item) => item.packageId === normalized.packageId)) {
+        return { packagePlacementStatus: `${normalized.packageId} zaten listede var.` };
+      }
+
+      return savePlanInState(state, {
+        importedPackages: [normalized, ...state.importedPackages],
+        selectedPackageId: normalized.packageId,
+        highlightedPackageIds: [normalized.packageId],
+        packagePlacementStatus: `${normalized.packageId} paket listesine eklendi.`,
+      });
+    }),
+
     selectPackage: (packageId) => set((state) => ({
       selectedPackageId: packageId,
       highlightedPackageIds: packageId ? [packageId] : state.highlightedPackageIds,
@@ -2217,6 +2259,7 @@ export const useStore = create<StoreState>((set, get) => {
         focusedLocationCode: locationCode,
         selectedLocationCode: locationCode,
         selectedId: rack?.id || state.selectedId,
+        activeRackWorkspaceId: rack?.id || state.activeRackWorkspaceId,
         viewMode: locationCode ? '3D' : state.viewMode,
         packagePlacementStatus: locationCode
           ? `${item.packageId} için ${locationCode} lokasyonuna odaklanıldı.`
@@ -2231,6 +2274,17 @@ export const useStore = create<StoreState>((set, get) => {
     }),
 
     selectLocation: (locationCode) => set({ selectedLocationCode: locationCode }),
+
+    openRackWorkspace: (rackId) => set((state) => {
+      const rack = state.objects.find((object) => object.id === rackId && object.type === 'rack');
+      if (!rack) return state;
+      return {
+        activeRackWorkspaceId: rackId,
+        selectedId: rackId,
+      };
+    }),
+
+    closeRackWorkspace: () => set({ activeRackWorkspaceId: null }),
 
     addObject: (obj) => set((state) => {
       if (!state.hasActivePlan) return state;
@@ -2358,6 +2412,7 @@ export const useStore = create<StoreState>((set, get) => {
           : state.locationCapacityOverrides,
         selectedLocationCode: state.selectedLocationCode && deletedCodes.has(state.selectedLocationCode) ? null : state.selectedLocationCode,
         selectedId: state.selectedId === id ? null : state.selectedId,
+        activeRackWorkspaceId: state.activeRackWorkspaceId === id ? null : state.activeRackWorkspaceId,
       });
     }),
 
@@ -2437,6 +2492,7 @@ export const useStore = create<StoreState>((set, get) => {
           packageSearchQuery: '',
           highlightedPackageIds: [],
           focusedLocationCode: null,
+          activeRackWorkspaceId: null,
           selectedId: null,
           plans: planSummaries(plans),
           activePlanId: plan.id,

@@ -77,6 +77,7 @@ export function LeftPanel() {
   const deleteProduct = useStore((state) => state.deleteProduct);
   const autoPlaceProduct = useStore((state) => state.autoPlaceProduct);
   const selectObject = useStore((state) => state.selectObject);
+  const openRackWorkspace = useStore((state) => state.openRackWorkspace);
   const setUnitPreference = useStore((state) => state.setUnitPreference);
   const updateWarehouseConfig = useStore((state) => state.updateWarehouseConfig);
   const setGridSize = useStore((state) => state.setGridSize);
@@ -1093,7 +1094,7 @@ export function LeftPanel() {
           {layers.map((object) => (
             <button
               key={object.id}
-              onClick={() => selectObject(object.id)}
+              onClick={() => (object.type === 'rack' ? openRackWorkspace(object.id) : selectObject(object.id))}
               className={`flex w-full items-center justify-between border-l-2 px-2 py-2 text-left text-xs transition-colors ${
                 selectedId === object.id
                   ? 'border-blue-500 bg-blue-950/40 text-blue-100'

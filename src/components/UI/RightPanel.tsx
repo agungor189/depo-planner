@@ -4,6 +4,7 @@ import {
   Eye,
   EyeOff,
   Lock,
+  PackageOpen,
   RotateCw,
   Trash2,
   Unlock,
@@ -65,6 +66,7 @@ export function RightPanel() {
   const placeImportedPackage = useStore((state) => state.placeImportedPackage);
   const unplaceImportedPackage = useStore((state) => state.unplaceImportedPackage);
   const focusPackage = useStore((state) => state.focusPackage);
+  const openRackWorkspace = useStore((state) => state.openRackWorkspace);
   const placementStatus = useStore((state) => state.placementStatus);
   const packagePlacementStatus = useStore((state) => state.packagePlacementStatus);
   const [labelMode, setLabelMode] = useState<'rack' | 'all' | 'single'>('rack');
@@ -213,15 +215,25 @@ export function RightPanel() {
       )}
 
       {obj.type === 'rack' && (
-        <RackInventoryPanel
-          rackCode={obj.rackCode}
-          locations={locations}
-          selectedLocationCode={selectedLocationCode}
-          selectedPackageId={selectedPackageId}
-          onSelectLocation={selectLocation}
-          onSelectPackage={selectPackage}
-          onFocusPackage={focusPackage}
-        />
+        <>
+          <button
+            type="button"
+            onClick={() => openRackWorkspace(obj.id)}
+            className="mb-4 flex w-full items-center justify-center gap-2 border border-blue-800 bg-blue-950/40 px-3 py-3 text-sm font-black text-blue-100 hover:bg-blue-900/50"
+          >
+            <PackageOpen className="h-4 w-4" />
+            Raf İçini Büyük Ekranda Düzenle
+          </button>
+          <RackInventoryPanel
+            rackCode={obj.rackCode}
+            locations={locations}
+            selectedLocationCode={selectedLocationCode}
+            selectedPackageId={selectedPackageId}
+            onSelectLocation={selectLocation}
+            onSelectPackage={selectPackage}
+            onFocusPackage={focusPackage}
+          />
+        </>
       )}
 
       <section className="space-y-3 border-b border-slate-800 pb-4">

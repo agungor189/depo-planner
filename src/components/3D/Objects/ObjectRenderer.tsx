@@ -44,6 +44,7 @@ function ObjectWrapper({
   const selectedId = useStore((state) => state.selectedId);
   const updateObject = useStore((state) => state.updateObject);
   const setSelectedId = useStore((state) => state.setSelectedId);
+  const openRackWorkspace = useStore((state) => state.openRackWorkspace);
   const viewMode = useStore((state) => state.viewMode);
   const warehouseConfig = useStore((state) => state.warehouseConfig);
   const gridSettings = useStore((state) => state.gridSettings);
@@ -56,6 +57,9 @@ function ObjectWrapper({
   const handlePointerDown = (event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
     setSelectedId(obj.id);
+    if (obj.type === 'rack') {
+      openRackWorkspace(obj.id);
+    }
   };
 
   const commitTransform = () => {

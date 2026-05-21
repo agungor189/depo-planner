@@ -5,15 +5,21 @@ import { BottomBar } from './components/UI/BottomBar';
 import { Scene } from './components/3D/Scene';
 import { useStore } from './store/useStore';
 import { StartScreen } from './components/UI/StartScreen';
+import { RackWorkspace } from './components/UI/RackWorkspace';
 import { useEffect } from 'react';
 
 export default function App() {
   const hasActivePlan = useStore((state) => state.hasActivePlan);
   const loadSharedState = useStore((state) => state.loadSharedState);
+  const activeRackWorkspaceId = useStore((state) => state.activeRackWorkspaceId);
 
   useEffect(() => {
     void loadSharedState();
   }, [loadSharedState]);
+
+  if (hasActivePlan && activeRackWorkspaceId) {
+    return <RackWorkspace />;
+  }
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-slate-950 font-sans text-slate-200">
