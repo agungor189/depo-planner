@@ -11,6 +11,7 @@ import {
   WarehouseConfig,
   WarehouseObject,
 } from '../types';
+import { formatLocationCode as formatCanonicalLocationCode } from '../domain/locationCode';
 
 export const APP_VERSION = 5;
 export const DEFAULT_LOCATION_CAPACITY = 2;
@@ -361,7 +362,11 @@ export function formatLocationCode(
   bin: number,
   _settings: LocationCodeSettings,
 ): string {
-  return `${rack.rackCode}-K${shelf}-P${bin}`;
+  return formatCanonicalLocationCode({
+    rackCode: rack.rackCode,
+    levelNumber: shelf,
+    slotNumber: bin,
+  });
 }
 
 export function getQrContent(locationCode: string, settings: LocationCodeSettings): string {

@@ -6,12 +6,14 @@ import { Scene } from './components/3D/Scene';
 import { useStore } from './store/useStore';
 import { StartScreen } from './components/UI/StartScreen';
 import { RackWorkspace } from './components/UI/RackWorkspace';
+import { WmsOperationCenter } from './components/UI/WmsOperationCenter';
 import { useEffect } from 'react';
 
 export default function App() {
   const hasActivePlan = useStore((state) => state.hasActivePlan);
   const loadSharedState = useStore((state) => state.loadSharedState);
   const activeRackWorkspaceId = useStore((state) => state.activeRackWorkspaceId);
+  const operationCenterOpen = useStore((state) => state.operationCenterOpen);
 
   useEffect(() => {
     void loadSharedState();
@@ -19,6 +21,10 @@ export default function App() {
 
   if (hasActivePlan && activeRackWorkspaceId) {
     return <RackWorkspace />;
+  }
+
+  if (hasActivePlan && operationCenterOpen) {
+    return <WmsOperationCenter />;
   }
 
   return (

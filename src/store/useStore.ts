@@ -76,6 +76,7 @@ interface StoreState {
   highlightedPackageIds: string[];
   focusedLocationCode: string | null;
   activeRackWorkspaceId: string | null;
+  operationCenterOpen: boolean;
   selectedId: string | null;
   viewMode: ViewMode;
   plans: PlanSummary[];
@@ -124,6 +125,8 @@ interface StoreState {
   selectLocation: (locationCode: string | null) => void;
   openRackWorkspace: (rackId: string) => void;
   closeRackWorkspace: () => void;
+  openOperationCenter: () => void;
+  closeOperationCenter: () => void;
   addObject: (obj: WarehouseObjectNoId) => void;
   addRackGroup: (options: {
     rackGroup: string;
@@ -1248,6 +1251,7 @@ function stateFromPlan(
       highlightedPackageIds: [],
       focusedLocationCode: null,
       activeRackWorkspaceId: null,
+      operationCenterOpen: false,
       selectedId: null,
       plans: planSummaries(plans),
       activePlanId: null,
@@ -1277,6 +1281,7 @@ function stateFromPlan(
     highlightedPackageIds: [],
     focusedLocationCode: null,
     activeRackWorkspaceId: null,
+    operationCenterOpen: false,
     selectedId: null,
     plans: planSummaries(plans),
     activePlanId: plan.id,
@@ -1385,6 +1390,7 @@ export const useStore = create<StoreState>((set, get) => {
     highlightedPackageIds: [],
     focusedLocationCode: null,
     activeRackWorkspaceId: null,
+    operationCenterOpen: false,
     selectedId: null,
     viewMode: '2D',
     plans: planSummaries(persistedData.plans),
@@ -2360,6 +2366,10 @@ export const useStore = create<StoreState>((set, get) => {
     }),
 
     closeRackWorkspace: () => set({ activeRackWorkspaceId: null }),
+
+    openOperationCenter: () => set({ operationCenterOpen: true, activeRackWorkspaceId: null }),
+
+    closeOperationCenter: () => set({ operationCenterOpen: false }),
 
     addObject: (obj) => set((state) => {
       if (!state.hasActivePlan) return state;

@@ -10,6 +10,7 @@ import {
   Maximize2,
   Rotate3D,
   Upload,
+  Workflow,
 } from 'lucide-react';
 import { useStore } from '../../store/useStore';
 import { ViewMode } from '../../types';
@@ -42,6 +43,7 @@ export function TopBar() {
   const selectedId = useStore((state) => state.selectedId);
   const exportJSON = useStore((state) => state.exportJSON);
   const importJSON = useStore((state) => state.importJSON);
+  const openOperationCenter = useStore((state) => state.openOperationCenter);
   const saveStatus = useStore((state) => state.saveStatus);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -135,6 +137,14 @@ export function TopBar() {
         <div className="h-8 w-px bg-slate-800" />
 
         <div className="flex items-center gap-2">
+          <button
+            title="Toplu kabul ve yerleştirme merkezi"
+            onClick={openOperationCenter}
+            className="hidden h-9 items-center gap-2 border border-blue-800 bg-blue-950/50 px-3 text-xs font-black uppercase tracking-wide text-blue-100 hover:bg-blue-900/60 xl:flex"
+          >
+            <Workflow className="h-4 w-4" />
+            Toplu Kabul
+          </button>
           <input ref={fileInputRef} type="file" className="hidden" accept=".json,application/json" onChange={handleImport} />
           <button
             title="JSON içe aktar"
