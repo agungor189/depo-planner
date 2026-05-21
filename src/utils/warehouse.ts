@@ -2,6 +2,7 @@ import {
   AreaUsage,
   GridSettings,
   LayoutWarning,
+  LocationCapacityOverride,
   LocationCode,
   LocationCodeSettings,
   LocationStock,
@@ -11,8 +12,8 @@ import {
   WarehouseObject,
 } from '../types';
 
-export const APP_VERSION = 4;
-export const LOCATION_PACKAGE_CAPACITY = 4;
+export const APP_VERSION = 5;
+export const DEFAULT_LOCATION_CAPACITY = 2;
 
 export const DEFAULT_WAREHOUSE_CONFIG: WarehouseConfig = {
   name: 'DSDST Depo',
@@ -365,19 +366,61 @@ export function getQrContent(locationCode: string, settings: LocationCodeSetting
   return settings.qrPrefix === 'DSDST' ? `DSDST|LOC|${locationCode}` : `LOC:${locationCode}`;
 }
 
-export function getProductQrContent(location: Pick<LocationCode, 'locationCode' | 'sku' | 'currentPackages'>): string {
+export function getProductQrContent(
+  location: Pick<LocationCode, 'locationCode' | 'sku' | 'currentPackages' | 'capacityPackages'>,
+): string {
   if (!location.sku || location.currentPackages <= 0) return `LOC:${location.locationCode}`;
-  return `DSDST|LOC|${location.locationCode}|SKU|${location.sku}|PKG|${location.currentPackages}/${LOCATION_PACKAGE_CAPACITY}`;
+  return `DSDST|LOC|${location.locationCode}|SKU|${location.sku}|PKG|${location.currentPackages}/${location.capacityPackages}`;
+}
+
+export function getRackPositionCount(rack: Rack): number {
+  return Math.max(1, Math.floor(Number(rack.positionsPerShelf || rack.binsPerShelf || 7)));
+}
+
+export function getRackDefaultLocationCapacity(rack: Rack): number {
+  const derived = Math.max(1, Math.floor(Number(rack.depthSlots || 1))) * Math.max(1, Math.floor(Number(rack.stackLevels || 1)));
+  return Math.max(1, Math.floor(Number(rack.defaultLocationCapacity || derived || DEFAULT_LOCATION_CAPACITY)));
+}
+
+export function getLocationCapacity(
+  rack: Rack,
+  locationCode: string,
+  locationStocks: LocationStock[] = [],
+  locationCapacityOverrides: LocationCapacityOverride[] = [],
+): number {
+  const override = locationCapacityOverrides.find((item) => item.locationCode === locationCode);
+  if (override) return Math.max(1, Math.floor(Number(override.capacityPackages) || 1));
+  const stock = locationStocks.find((item) => item.locationCode === locationCode);
+  if (stock?.capacityPackages) return Math.max(1, Math.floor(Number(stock.capacityPackages) || 1));
+  return getRackDefaultLocationCapacity(rack);
+}
+
+export function estimateLocationCapacity(
+  rack: Rack,
+  packageProfile: { boxDepthCm: number; boxHeightCm: number },
+) {
+  const rackDepthCm = Math.max(1, Number(rack.depthCm || rack.depth * 100 || 60));
+  const shelfClearHeightCm = Math.max(1, Number(rack.heightCm || rack.height * 100 || 180) / Math.max(1, rack.shelfCount));
+  const boxDepthCm = Math.max(1, Number(packageProfile.boxDepthCm || 25));
+  const boxHeightCm = Math.max(1, Number(packageProfile.boxHeightCm || 25));
+  const depthSlots = Math.max(1, Math.floor(rackDepthCm / boxDepthCm));
+  const stackLevels = Math.max(1, Math.floor(shelfClearHeightCm / boxHeightCm));
+  return {
+    depthSlots: Math.min(depthSlots, 4),
+    stackLevels: Math.min(stackLevels, 4),
+    capacityPackages: Math.min(Math.max(1, depthSlots * stackLevels), 99),
+  };
 }
 
 export function generateLocationCodes(
   rack: Rack,
   settings: LocationCodeSettings,
   locationStocks: LocationStock[] = [],
+  locationCapacityOverrides: LocationCapacityOverride[] = [],
 ): LocationCode[] {
   const codes: LocationCode[] = [];
   const shelves = Math.max(0, Math.floor(rack.shelfCount));
-  const bins = Math.max(0, Math.floor(rack.binsPerShelf));
+  const bins = getRackPositionCount(rack);
   const stockByLocation = new Map(locationStocks.map((stock) => [stock.locationCode, stock]));
 
   for (let shelf = 1; shelf <= shelves; shelf += 1) {
@@ -386,11 +429,13 @@ export function generateLocationCodes(
       const shelfCode = `K${shelf}`;
       const binCode = `P${bin}`;
       const stock = stockByLocation.get(locationCode);
+      const capacityPackages = getLocationCapacity(rack, locationCode, locationStocks, locationCapacityOverrides);
       const currentPackages = Math.min(
         Math.max(0, Math.floor(Number(stock?.currentPackages || 0))),
-        LOCATION_PACKAGE_CAPACITY,
+        capacityPackages,
       );
       const quantityInsidePackage = Math.max(0, Number(stock?.quantityInsidePackage || 0));
+      const packages = Array.isArray(stock?.packages) ? stock.packages : [];
       const location: LocationCode = {
         locationCode,
         rackGroup: rack.rackGroup,
@@ -409,14 +454,20 @@ export function generateLocationCodes(
         depth: rack.depth,
         height: rack.height,
         note: stock?.note || rack.note,
-        capacityPackages: LOCATION_PACKAGE_CAPACITY,
+        capacityPackages,
         currentPackages,
         sku: stock?.sku || '',
         productName: stock?.productName || '',
-        category: stock?.category || rack.productGroup,
+        category: stock?.category || rack.productCategory || rack.productGroup,
         supplierCode: stock?.supplierCode || '',
         packageQuantity: quantityInsidePackage,
         totalItemQuantity: currentPackages * quantityInsidePackage,
+        packageIds: packages.map((item) => item.packageId).join('|'),
+        boxWidthCm: stock?.boxWidthCm || packages[0]?.boxWidthCm || 36,
+        boxDepthCm: stock?.boxDepthCm || packages[0]?.boxDepthCm || 25,
+        boxHeightCm: stock?.boxHeightCm || packages[0]?.boxHeightCm || 25,
+        weightKg: stock?.weightKg || packages[0]?.weightKg || 0,
+        packages,
         qrContent: getQrContent(locationCode, settings),
         productQrContent: '',
       };
@@ -434,16 +485,18 @@ export function generateAllLocationCodes(
   objects: WarehouseObject[],
   settings: LocationCodeSettings,
   locationStocks: LocationStock[] = [],
+  locationCapacityOverrides: LocationCapacityOverride[] = [],
 ): LocationCode[] {
   return objects
     .filter((object): object is Rack => object.type === 'rack')
-    .flatMap((rack) => generateLocationCodes(rack, settings, locationStocks));
+    .flatMap((rack) => generateLocationCodes(rack, settings, locationStocks, locationCapacityOverrides));
 }
 
 export function calculateAreaUsage(
   objects: WarehouseObject[],
   warehouseConfig: WarehouseConfig,
   locationStocks: LocationStock[] = [],
+  locationCapacityOverrides: LocationCapacityOverride[] = [],
 ): AreaUsage {
   const totalWarehouseArea = warehouseConfig.width * warehouseConfig.length;
   const visibleObjects = objects.filter((object) => object.visible);
@@ -461,8 +514,9 @@ export function calculateAreaUsage(
     .reduce((sum, object) => sum + object.width * object.depth, 0);
   const freeArea = Math.max(totalWarehouseArea - usedArea, 0);
   const racks = visibleObjects.filter((object): object is Rack => object.type === 'rack');
-  const totalLocationCount = racks.reduce((sum, rack) => sum + rack.shelfCount * rack.binsPerShelf, 0);
-  const totalPackageCapacity = totalLocationCount * LOCATION_PACKAGE_CAPACITY;
+  const allLocations = generateAllLocationCodes(racks, DEFAULT_LOCATION_SETTINGS, locationStocks, locationCapacityOverrides);
+  const totalLocationCount = allLocations.length;
+  const totalPackageCapacity = allLocations.reduce((sum, location) => sum + location.capacityPackages, 0);
   const filledPackageCount = locationStocks.reduce((sum, stock) => sum + Math.min(stock.currentPackages, stock.capacityPackages), 0);
   const categoryPackageCounts = locationStocks.reduce<Record<string, number>>((totals, stock) => {
     totals[stock.category] = (totals[stock.category] || 0) + Math.min(stock.currentPackages, stock.capacityPackages);
@@ -514,9 +568,10 @@ export function locationsToCsv(locations: LocationCode[]): string {
     'sku',
     'productName',
     'category',
-    'supplierCode',
-    'packageQuantity',
-    'totalItemQuantity',
+    'packageIds',
+    'boxWidthCm',
+    'boxDepthCm',
+    'boxHeightCm',
     'note',
   ];
   return toCsv(
@@ -530,9 +585,10 @@ export function locationsToCsv(locations: LocationCode[]): string {
       sku: location.sku,
       productName: location.productName,
       category: location.category,
-      supplierCode: location.supplierCode,
-      packageQuantity: location.packageQuantity,
-      totalItemQuantity: location.totalItemQuantity,
+      packageIds: location.packageIds,
+      boxWidthCm: location.boxWidthCm,
+      boxDepthCm: location.boxDepthCm,
+      boxHeightCm: location.boxHeightCm,
       note: location.note,
     })),
     columns,
@@ -546,12 +602,15 @@ export function racksToCsv(objects: WarehouseObject[]): string {
     'rackCode',
     'rackName',
     'shelfCount',
-    'binsPerShelf',
+    'positionsPerShelf',
+    'defaultLocationCapacity',
+    'depthSlots',
+    'stackLevels',
     'totalLocations',
     'totalPackageCapacity',
-    'width',
-    'depth',
-    'height',
+    'widthCm',
+    'depthCm',
+    'heightCm',
     'x',
     'z',
     'rotation',
@@ -564,12 +623,15 @@ export function racksToCsv(objects: WarehouseObject[]): string {
       rackCode: rack.rackCode,
       rackName: rack.name,
       shelfCount: rack.shelfCount,
-      binsPerShelf: rack.binsPerShelf,
-      totalLocations: rack.shelfCount * rack.binsPerShelf,
-      totalPackageCapacity: rack.shelfCount * rack.binsPerShelf * LOCATION_PACKAGE_CAPACITY,
-      width: rack.width,
-      depth: rack.depth,
-      height: rack.height,
+      positionsPerShelf: getRackPositionCount(rack),
+      defaultLocationCapacity: getRackDefaultLocationCapacity(rack),
+      depthSlots: rack.depthSlots || 1,
+      stackLevels: rack.stackLevels || 1,
+      totalLocations: rack.shelfCount * getRackPositionCount(rack),
+      totalPackageCapacity: rack.shelfCount * getRackPositionCount(rack) * getRackDefaultLocationCapacity(rack),
+      widthCm: rack.widthCm || rack.width * 100,
+      depthCm: rack.depthCm || rack.depth * 100,
+      heightCm: rack.heightCm || rack.height * 100,
       x: rack.x,
       z: rack.z,
       rotation: Math.round((rack.rotation * 180) / Math.PI),

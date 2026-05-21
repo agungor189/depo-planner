@@ -1,10 +1,10 @@
-import { ReactNode, useMemo, useRef } from 'react';
+import { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { ThreeEvent } from '@react-three/fiber';
 import { Text, TransformControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../../../store/useStore';
-import { Rack, WarehouseObject } from '../../../types';
-import { clampObjectToWarehouse, displayMeasure, getFootprint, getObjectLabel } from '../../../utils/warehouse';
+import { LocationCode, ProductGroup, Rack, WarehouseObject } from '../../../types';
+import { clampObjectToWarehouse, displayMeasure, getFootprint, getObjectLabel, getRackPositionCount } from '../../../utils/warehouse';
 
 function planToScene(
   obj: WarehouseObject,
@@ -48,6 +48,7 @@ function ObjectWrapper({
   const warehouseConfig = useStore((state) => state.warehouseConfig);
   const gridSettings = useStore((state) => state.gridSettings);
   const groupRef = useRef<THREE.Group>(null);
+  const [transformObject, setTransformObject] = useState<THREE.Group | null>(null);
   const topLike = viewMode === '2D' || viewMode === 'TOP';
   const isSelected = selectedId === obj.id;
   const position = planToScene(obj, warehouseConfig.width, warehouseConfig.length);
@@ -72,39 +73,46 @@ function ObjectWrapper({
     groupRef.current.position.set(x, y, z);
   };
 
+  useEffect(() => {
+    setTransformObject(groupRef.current);
+  }, [isSelected]);
+
+  const group = (
+    <group
+      ref={groupRef}
+      position={position}
+      rotation={[0, obj.rotation, 0]}
+      onPointerDown={handlePointerDown}
+    >
+      {children}
+      <Text
+        position={[0, topLike ? 0.12 : Math.max(obj.height, 0.08) + 0.24, 0]}
+        rotation={labelRotation(topLike)}
+        color="#f8fafc"
+        fontSize={topLike ? 0.18 : 0.28}
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.012}
+        outlineColor="#020617"
+      >
+        {label}
+      </Text>
+    </group>
+  );
+
   return (
     <>
-      {isSelected && !obj.locked && (
-        <TransformControls
-          object={groupRef}
-          mode="translate"
-          showY={false}
-          translationSnap={gridSettings.snap ? gridSettings.snapSize : undefined}
-          onObjectChange={constrainTransform}
-          onMouseUp={commitTransform}
-        />
+      {isSelected && !obj.locked && transformObject && (
+      <TransformControls
+        object={transformObject}
+        mode="translate"
+        showY={false}
+        translationSnap={gridSettings.snap ? gridSettings.snapSize : undefined}
+        onObjectChange={constrainTransform}
+        onMouseUp={commitTransform}
+      />
       )}
-
-      <group
-        ref={groupRef}
-        position={position}
-        rotation={[0, obj.rotation, 0]}
-        onPointerDown={handlePointerDown}
-      >
-        {children}
-        <Text
-          position={[0, topLike ? 0.12 : Math.max(obj.height, 0.08) + 0.24, 0]}
-          rotation={labelRotation(topLike)}
-          color="#f8fafc"
-          fontSize={topLike ? 0.18 : 0.28}
-          anchorX="center"
-          anchorY="middle"
-          outlineWidth={0.012}
-          outlineColor="#020617"
-        >
-          {label}
-        </Text>
-      </group>
+      {group}
     </>
   );
 }
@@ -129,13 +137,111 @@ function BasicBlock({ obj, selected }: { obj: WarehouseObject; selected: boolean
   );
 }
 
+const packageColors: Record<ProductGroup, string> = {
+  Alüminyum: '#38bdf8',
+  Döküm: '#a78bfa',
+  'Karbon Çelik': '#d4d4d8',
+  PPR: '#34d399',
+  Karışık: '#f59e0b',
+  Diğer: '#94a3b8',
+};
+
+function RackLocationCell({
+  rack,
+  location,
+  positionCount,
+  topLike,
+  selectedPackageId,
+  highlightedPackageIds,
+  onClick,
+}: {
+  rack: Rack;
+  location: LocationCode;
+  positionCount: number;
+  topLike: boolean;
+  selectedPackageId: string | null;
+  highlightedPackageIds: string[];
+  onClick: (event: ThreeEvent<PointerEvent>, location: LocationCode) => void;
+}) {
+  const cellWidth = rack.width / Math.max(1, positionCount);
+  const shelfHeight = rack.height / Math.max(1, rack.shelfCount);
+  const x = -rack.width / 2 + (location.positionNumber - 0.5) * cellWidth;
+  const shelfBase = (location.shelfNumber - 1) * shelfHeight;
+  const packages = (location.packages || []).slice(0, location.capacityPackages);
+  const depthSlots = Math.max(1, Math.floor(Number(rack.depthSlots || 1)));
+  const stackLevels = Math.max(1, Math.floor(Number(rack.stackLevels || 1)));
+  const slotDepth = rack.depth / depthSlots;
+  const blockWidth = Math.max(0.05, cellWidth * 0.58);
+  const blockDepth = Math.max(0.05, slotDepth * 0.55);
+  const blockHeight = topLike ? 0.06 : Math.max(0.06, Math.min(0.18, shelfHeight * 0.32));
+  const hasHighlight = packages.some((item) => highlightedPackageIds.includes(item.packageId));
+  const hasSelected = Boolean(selectedPackageId && packages.some((item) => item.packageId === selectedPackageId));
+
+  return (
+    <group>
+      <mesh
+        position={[x, topLike ? 0.16 : shelfBase + shelfHeight / 2, 0]}
+        onPointerDown={(event) => onClick(event, location)}
+      >
+        <boxGeometry args={[Math.max(0.05, cellWidth * 0.92), topLike ? 0.07 : shelfHeight * 0.9, rack.depth * 0.92]} />
+        <meshBasicMaterial transparent opacity={0.02} color={hasSelected || hasHighlight ? '#facc15' : '#ffffff'} />
+      </mesh>
+
+      {packages.map((item, index) => {
+        const depthIndex = Math.floor(index / stackLevels) % depthSlots;
+        const stackIndex = index % stackLevels;
+        const z = -rack.depth / 2 + (depthIndex + 0.5) * slotDepth;
+        const y = topLike
+          ? 0.22 + index * 0.012
+          : shelfBase + blockHeight / 2 + 0.05 + stackIndex * (blockHeight + 0.025);
+        const selectedPackage = selectedPackageId === item.packageId;
+        const highlighted = highlightedPackageIds.includes(item.packageId);
+        const color = selectedPackage ? '#facc15' : highlighted ? '#fb7185' : packageColors[item.category] || '#94a3b8';
+
+        return (
+          <mesh key={item.packageId} position={[x, y, z]} castShadow receiveShadow>
+            <boxGeometry args={[blockWidth, blockHeight, blockDepth]} />
+            <meshStandardMaterial
+              color={color}
+              emissive={selectedPackage || highlighted ? color : '#000000'}
+              emissiveIntensity={selectedPackage || highlighted ? 0.45 : 0}
+              roughness={0.5}
+              metalness={0.05}
+            />
+          </mesh>
+        );
+      })}
+    </group>
+  );
+}
+
 function RackVisual({ rack, selected }: { rack: Rack; selected: boolean }) {
   const viewMode = useStore((state) => state.viewMode);
   const gridSettings = useStore((state) => state.gridSettings);
   const unitPreference = useStore((state) => state.unitPreference);
+  const generateLocationCodes = useStore((state) => state.generateLocationCodes);
+  const selectLocation = useStore((state) => state.selectLocation);
+  const setSelectedId = useStore((state) => state.setSelectedId);
+  const selectedPackageId = useStore((state) => state.selectedPackageId);
+  const selectedPackage = useStore((state) =>
+    state.selectedPackageId ? state.importedPackages.find((item) => item.packageId === state.selectedPackageId) || null : null,
+  );
+  const highlightedPackageIds = useStore((state) => state.highlightedPackageIds);
+  const placeImportedPackage = useStore((state) => state.placeImportedPackage);
   const topLike = viewMode === '2D' || viewMode === 'TOP';
   const shelfLines = Array.from({ length: Math.max(rack.shelfCount - 1, 0) }, (_, index) => index + 1);
-  const binLines = Array.from({ length: Math.max(rack.binsPerShelf - 1, 0) }, (_, index) => index + 1);
+  const positionCount = getRackPositionCount(rack);
+  const binLines = Array.from({ length: Math.max(positionCount - 1, 0) }, (_, index) => index + 1);
+  const locations = generateLocationCodes(rack.id);
+
+  const handleCellClick = (event: ThreeEvent<PointerEvent>, location: LocationCode) => {
+    event.stopPropagation();
+    setSelectedId(rack.id);
+    selectLocation(location.locationCode);
+    if (selectedPackage?.status === 'unplaced') {
+      placeImportedPackage(selectedPackage.packageId, location.locationCode);
+    }
+  };
 
   return (
     <group>
@@ -165,11 +271,24 @@ function RackVisual({ rack, selected }: { rack: Rack; selected: boolean }) {
       {binLines.map((line) => (
         <mesh
           key={`bin-${line}`}
-          position={[-rack.width / 2 + (rack.width / rack.binsPerShelf) * line, topLike ? 0.11 : rack.height / 2, 0]}
+          position={[-rack.width / 2 + (rack.width / positionCount) * line, topLike ? 0.11 : rack.height / 2, 0]}
         >
           <boxGeometry args={[0.018, topLike ? 0.035 : rack.height + 0.02, rack.depth + 0.05]} />
           <meshBasicMaterial color="#dbeafe" transparent opacity={0.75} />
         </mesh>
+      ))}
+
+      {locations.map((location) => (
+        <RackLocationCell
+          key={location.locationCode}
+          rack={rack}
+          location={location}
+          positionCount={positionCount}
+          topLike={topLike}
+          selectedPackageId={selectedPackageId}
+          highlightedPackageIds={highlightedPackageIds}
+          onClick={handleCellClick}
+        />
       ))}
 
       {gridSettings.showAccessZones && !topLike && (

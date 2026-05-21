@@ -12,6 +12,8 @@ function CameraController() {
   const warehouseConfig = useStore((state) => state.warehouseConfig);
   const selectedId = useStore((state) => state.selectedId);
   const objects = useStore((state) => state.objects);
+  const focusedLocationCode = useStore((state) => state.focusedLocationCode);
+  const generateLocationCodes = useStore((state) => state.generateLocationCodes);
 
   useEffect(() => {
     const maxDimension = Math.max(warehouseConfig.width, warehouseConfig.length, warehouseConfig.height);
@@ -58,6 +60,21 @@ function CameraController() {
       window.removeEventListener('focus-selected-object', focusSelected);
     };
   }, [camera, objects, selectedId, warehouseConfig]);
+
+  useEffect(() => {
+    if (!focusedLocationCode) return;
+    const location = generateLocationCodes().find((item) => item.locationCode === focusedLocationCode);
+    if (!location) return;
+    const rack = objects.find((object) => object.type === 'rack' && object.rackCode === location.rackCode);
+    if (!rack) return;
+
+    const x = rack.x + rack.width / 2 - warehouseConfig.width / 2;
+    const z = rack.z + rack.depth / 2 - warehouseConfig.length / 2;
+    const distance = Math.max(rack.width, rack.depth, rack.height, 1) * 2.7;
+    camera.position.set(x + distance, rack.height + distance * 0.45, z + distance * 0.85);
+    camera.lookAt(x, rack.height * 0.55, z);
+    camera.updateProjectionMatrix();
+  }, [camera, focusedLocationCode, generateLocationCodes, objects, warehouseConfig]);
 
   return null;
 }

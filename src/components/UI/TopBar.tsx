@@ -38,13 +38,14 @@ export function TopBar() {
   const warehouseConfig = useStore((state) => state.warehouseConfig);
   const objects = useStore((state) => state.objects);
   const locationStocks = useStore((state) => state.locationStocks);
+  const locationCapacityOverrides = useStore((state) => state.locationCapacityOverrides);
   const selectedId = useStore((state) => state.selectedId);
   const exportJSON = useStore((state) => state.exportJSON);
   const importJSON = useStore((state) => state.importJSON);
   const saveStatus = useStore((state) => state.saveStatus);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const usage = calculateAreaUsage(objects, warehouseConfig, locationStocks);
+  const usage = calculateAreaUsage(objects, warehouseConfig, locationStocks, locationCapacityOverrides);
 
   const handleExport = () => {
     downloadText(

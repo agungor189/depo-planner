@@ -5,12 +5,13 @@ import { calculateAreaUsage, trimNumber } from '../../utils/warehouse';
 export function BottomBar() {
   const objects = useStore((state) => state.objects);
   const locationStocks = useStore((state) => state.locationStocks);
+  const locationCapacityOverrides = useStore((state) => state.locationCapacityOverrides);
   const warehouseConfig = useStore((state) => state.warehouseConfig);
   const warnings = useStore((state) => state.warnings);
   const saveStatus = useStore((state) => state.saveStatus);
   const sharedSyncStatus = useStore((state) => state.sharedSyncStatus);
   const selectedId = useStore((state) => state.selectedId);
-  const usage = calculateAreaUsage(objects, warehouseConfig, locationStocks);
+  const usage = calculateAreaUsage(objects, warehouseConfig, locationStocks, locationCapacityOverrides);
   const selected = objects.find((object) => object.id === selectedId);
   const errorCount = warnings.filter((warning) => warning.severity === 'error').length;
 

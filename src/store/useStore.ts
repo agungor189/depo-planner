@@ -3,9 +3,13 @@ import { v4 as uuidv4 } from 'uuid';
 import {
   GridSettings,
   LayoutWarning,
+  LocationCapacityOverride,
   LocationCode,
   LocationCodeSettings,
   LocationStock,
+  PackageRecord,
+  PackageImportResult,
+  PackagePlacement,
   PlanSummary,
   ProductItem,
   ProductGroup,
@@ -13,8 +17,10 @@ import {
   UnitPreference,
   ViewMode,
   WarehouseConfig,
+  WarehouseImportedPackage,
   WarehouseObject,
   WarehouseObjectNoId,
+  WarehousePackagesExport,
   WarehousePlan,
 } from '../types';
 import {
@@ -22,15 +28,18 @@ import {
   DEFAULT_GRID_SETTINGS,
   DEFAULT_LOCATION_SETTINGS,
   DEFAULT_WAREHOUSE_CONFIG,
-  LOCATION_PACKAGE_CAPACITY,
+  DEFAULT_LOCATION_CAPACITY,
   calculateAreaUsage,
   buildRackCode,
   clampObjectToWarehouse,
   ensureUniqueRackIdentity,
   generateAllLocationCodes,
   generateLocationCodes as generateRackLocationCodes,
+  getLocationCapacity,
+  getRackDefaultLocationCapacity,
   getNextRackIdentity,
   getNextRackNumber,
+  getRackPositionCount,
   locationsToCsv,
   normalizeRackGroup,
   parseRackCode,
@@ -59,7 +68,13 @@ interface StoreState {
   objects: WarehouseObject[];
   products: ProductItem[];
   locationStocks: LocationStock[];
+  importedPackages: WarehouseImportedPackage[];
+  locationCapacityOverrides: LocationCapacityOverride[];
   selectedLocationCode: string | null;
+  selectedPackageId: string | null;
+  packageSearchQuery: string;
+  highlightedPackageIds: string[];
+  focusedLocationCode: string | null;
   selectedId: string | null;
   viewMode: ViewMode;
   plans: PlanSummary[];
@@ -69,6 +84,7 @@ interface StoreState {
   saveStatus: string;
   sharedSyncStatus: string;
   placementStatus: string;
+  packagePlacementStatus: string | null;
 
   loadSharedState: () => Promise<void>;
   createEmptyPlan: (config: WarehouseConfig, unitPreference: UnitPreference) => void;
@@ -91,13 +107,26 @@ interface StoreState {
   adjustLocationPackages: (locationCode: string, delta: number) => void;
   clearLocation: (locationCode: string) => void;
   moveLocationStock: (fromLocationCode: string, toLocationCode: string) => void;
+  setLocationCapacity: (locationCode: string, capacityPackages: number) => void;
+  applyRackCapacity: (rackId: string, mode: 'all' | 'empty' | 'preserve') => void;
+  importPackageManifest: (csvString: string) => boolean;
+  importPackagesExport: (jsonText: string) => PackageImportResult;
+  selectPackage: (packageId: string | null) => void;
+  setPackageSearchQuery: (query: string) => void;
+  placeImportedPackage: (packageId: string, locationCode: string) => void;
+  unplaceImportedPackage: (packageId: string) => void;
+  focusPackage: (packageId: string) => void;
+  clearPackageHighlights: () => void;
   selectLocation: (locationCode: string | null) => void;
   addObject: (obj: WarehouseObjectNoId) => void;
   addRackGroup: (options: {
     rackGroup: string;
     count: number;
     shelfCount: number;
-    binsPerShelf: number;
+    positionsPerShelf: number;
+    defaultLocationCapacity: number;
+    depthSlots: number;
+    stackLevels: number;
     width: number;
     depth: number;
     height: number;
@@ -152,6 +181,7 @@ let sharedStatusListener: ((status: string) => void) | null = null;
 
 function safeLocalStorageGet(key: string) {
   try {
+    if (typeof localStorage === 'undefined') return null;
     return localStorage.getItem(key);
   } catch {
     return null;
@@ -160,6 +190,7 @@ function safeLocalStorageGet(key: string) {
 
 function safeLocalStorageSet(key: string, value: string) {
   try {
+    if (typeof localStorage === 'undefined') return;
     localStorage.setItem(key, value);
   } catch (error) {
     console.warn('Yerel kayıt yazılamadı', error);
@@ -223,7 +254,14 @@ function normalizeLocationCodeSettings(raw?: Partial<LocationCodeSettings>): Loc
 const validProductGroups: ProductGroup[] = ['Alüminyum', 'Döküm', 'Karbon Çelik', 'PPR', 'Karışık', 'Diğer'];
 
 function normalizeProductGroup(value?: string): ProductGroup {
-  return validProductGroups.includes(value as ProductGroup) ? value as ProductGroup : 'Diğer';
+  if (validProductGroups.includes(value as ProductGroup)) return value as ProductGroup;
+  const text = String(value || '').toLocaleLowerCase('tr-TR');
+  if (text.includes('alüminyum') || text.includes('aluminyum') || text.includes('aluminum')) return 'Alüminyum';
+  if (text.includes('döküm') || text.includes('dokum')) return 'Döküm';
+  if (text.includes('karbon') || text.includes('çelik') || text.includes('celik')) return 'Karbon Çelik';
+  if (text.includes('ppr')) return 'PPR';
+  if (text.includes('karışık') || text.includes('karisik')) return 'Karışık';
+  return 'Diğer';
 }
 
 function normalizeSku(value?: string): string {
@@ -243,32 +281,223 @@ function parseLocationCode(value: string) {
   };
 }
 
+function looseNumber(value: unknown, fallback = 0): number {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : fallback;
+  const cleaned = String(value ?? '')
+    .replace(',', '.')
+    .replace(/[^0-9.-]/g, '');
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseDimensionsLabel(value: unknown) {
+  const numbers = String(value || '')
+    .replace(',', '.')
+    .match(/\d+(?:\.\d+)?/g)
+    ?.map(Number)
+    .filter((item) => Number.isFinite(item)) || [];
+
+  return {
+    boxWidthCm: Math.max(0, numbers[0] || 36),
+    boxDepthCm: Math.max(0, numbers[1] || 25),
+    boxHeightCm: Math.max(0, numbers[2] || 25),
+  };
+}
+
+function packageSearchHaystack(item: WarehouseImportedPackage): string {
+  return [
+    item.packageId,
+    item.sku,
+    item.productCode,
+    item.productName,
+    item.material,
+    item.type,
+    item.dimensionsLabel,
+    item.lot,
+    item.packageNo,
+    item.placement?.locationCode || '',
+    item.locationHint,
+    item.searchText,
+  ]
+    .join(' ')
+    .toLocaleLowerCase('tr-TR');
+}
+
+function packageMatchesQuery(item: WarehouseImportedPackage, query: string): boolean {
+  const normalized = query.trim().toLocaleLowerCase('tr-TR');
+  if (!normalized) return true;
+  return packageSearchHaystack(item).includes(normalized);
+}
+
+function normalizeImportedPackage(
+  raw: Partial<WarehouseImportedPackage> & Record<string, unknown>,
+  importedAt = now(),
+  forceUnplaced = false,
+): WarehouseImportedPackage | null {
+  const packageId = String(raw.packageId || '').trim();
+  if (!packageId) return null;
+  const dimensions = parseDimensionsLabel(raw.dimensionsLabel);
+  const category = normalizeProductGroup(String(raw.material || raw.category || raw.type || ''));
+  const sku = normalizeSku(String(raw.sku || raw.productCode || packageId));
+  const locationCode = String(raw.placement && typeof raw.placement === 'object'
+    ? (raw.placement as PackagePlacement).locationCode || ''
+    : '').trim().toUpperCase();
+  const placement = !forceUnplaced && raw.status === 'placed' && parseLocationCode(locationCode)
+    ? {
+        locationCode,
+        rackCode: parseLocationCode(locationCode)?.rackCode || '',
+        placedAt: (raw.placement as PackagePlacement | null)?.placedAt || importedAt,
+      }
+    : null;
+  const status: WarehouseImportedPackage['status'] = placement ? 'placed' : 'unplaced';
+  const quantityInsidePackage = Math.max(0, Math.floor(looseNumber(raw.quantityPerPackage, looseNumber(raw.quantityInsidePackage, 0))));
+  const boxWidthCm = Math.max(0, looseNumber(raw.boxWidthCm, dimensions.boxWidthCm));
+  const boxDepthCm = Math.max(0, looseNumber(raw.boxDepthCm, dimensions.boxDepthCm));
+  const boxHeightCm = Math.max(0, looseNumber(raw.boxHeightCm, dimensions.boxHeightCm));
+  const weightKg = Math.max(0, looseNumber(raw.boxWeight, looseNumber(raw.productWeight, looseNumber(raw.weightKg, 0))));
+
+  const normalized: WarehouseImportedPackage = {
+    packageId,
+    labelIndex: Math.max(1, Math.floor(looseNumber(raw.labelIndex, 1))),
+    status,
+    placement,
+    sku,
+    productCode: String(raw.productCode || sku || ''),
+    productName: String(raw.productName || sku || packageId),
+    material: String(raw.material || ''),
+    type: String(raw.type || ''),
+    dimensionsLabel: String(raw.dimensionsLabel || `${boxWidthCm} x ${boxDepthCm} x ${boxHeightCm} cm`),
+    lot: String(raw.lot || ''),
+    packageNo: String(raw.packageNo || raw.packageIndex || ''),
+    totalPackages: String(raw.totalPackages || ''),
+    quantityPerPackage: String(raw.quantityPerPackage || quantityInsidePackage || ''),
+    productWeight: String(raw.productWeight || ''),
+    boxWeight: String(raw.boxWeight || weightKg || ''),
+    stockCount: String(raw.stockCount || ''),
+    locationHint: String(raw.locationHint || ''),
+    note: String(raw.note || ''),
+    printQty: Math.max(1, Math.floor(looseNumber(raw.printQty, 1))),
+    sourceProductId: String(raw.sourceProductId || ''),
+    searchText: String(raw.searchText || ''),
+    importedAt: String(raw.importedAt || importedAt),
+    category,
+    boxWidthCm,
+    boxDepthCm,
+    boxHeightCm,
+    weightKg,
+    quantityInsidePackage,
+  };
+
+  normalized.searchText = normalized.searchText || packageSearchHaystack(normalized);
+  return normalized;
+}
+
+function packageRecordFromImported(item: WarehouseImportedPackage, locationCode: string): PackageRecord {
+  return {
+    packageId: item.packageId,
+    sku: item.sku,
+    productName: item.productName,
+    supplierCode: item.productCode || item.sku,
+    category: item.category,
+    packageIndex: Math.max(1, Math.floor(looseNumber(item.packageNo, item.labelIndex || 1))),
+    totalPackages: Math.max(1, Math.floor(looseNumber(item.totalPackages, item.labelIndex || 1))),
+    quantityInsidePackage: item.quantityInsidePackage,
+    boxWidthCm: item.boxWidthCm,
+    boxDepthCm: item.boxDepthCm,
+    boxHeightCm: item.boxHeightCm,
+    weightKg: item.weightKg,
+    locationCode,
+    status: 'placed',
+    createdAt: now(),
+  };
+}
+
 function normalizeProduct(raw: Partial<ProductItem>): ProductItem {
   const timestamp = now();
   const sku = normalizeSku(raw.sku);
+  const legacy = raw as Partial<ProductItem> & {
+    packageWidthCm?: number;
+    packageDepthCm?: number;
+    packageHeightCm?: number;
+  };
+  const packages = Array.isArray(raw.packages)
+    ? raw.packages.map((item) => normalizePackageRecord(item, sku || normalizeSku(item.sku))).filter(Boolean) as PackageRecord[]
+    : undefined;
   return {
     id: raw.id || generateId(),
     sku: sku || 'SKU-YENI',
     productName: raw.productName || raw.sku || 'Yeni Ürün',
     supplierCode: raw.supplierCode || sku || '',
     category: normalizeProductGroup(raw.category),
-    packageCount: Math.max(0, Math.floor(Number(raw.packageCount ?? 1))),
+    packageCount: Math.max(0, Math.floor(Number(raw.packageCount ?? packages?.length ?? 1))),
     quantityInsidePackage: Math.max(0, Math.floor(Number(raw.quantityInsidePackage ?? 1))),
-    packageWidthCm: Math.max(0, Number(raw.packageWidthCm ?? 36)),
-    packageDepthCm: Math.max(0, Number(raw.packageDepthCm ?? 25)),
-    packageHeightCm: Math.max(0, Number(raw.packageHeightCm ?? 25)),
+    boxWidthCm: Math.max(0, Number(raw.boxWidthCm ?? legacy.packageWidthCm ?? 36)),
+    boxDepthCm: Math.max(0, Number(raw.boxDepthCm ?? legacy.packageDepthCm ?? 25)),
+    boxHeightCm: Math.max(0, Number(raw.boxHeightCm ?? legacy.packageHeightCm ?? 25)),
+    weightKg: Math.max(0, Number(raw.weightKg ?? 0)),
     note: raw.note || '',
+    packages,
     createdAt: raw.createdAt || timestamp,
     updatedAt: raw.updatedAt || timestamp,
   };
 }
 
+function normalizePackageRecord(raw: Partial<PackageRecord>, fallbackSku?: string): PackageRecord | null {
+  const sku = normalizeSku(raw.sku || fallbackSku);
+  if (!sku) return null;
+  return {
+    packageId: raw.packageId || `PKG-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${sku}-${generateId().slice(0, 8)}`,
+    sku,
+    productName: raw.productName || '',
+    supplierCode: raw.supplierCode || sku,
+    category: normalizeProductGroup(raw.category),
+    packageIndex: Math.max(1, Math.floor(Number(raw.packageIndex || 1))),
+    totalPackages: Math.max(1, Math.floor(Number(raw.totalPackages || 1))),
+    quantityInsidePackage: Math.max(0, Math.floor(Number(raw.quantityInsidePackage || 0))),
+    boxWidthCm: Math.max(0, Number(raw.boxWidthCm || 36)),
+    boxDepthCm: Math.max(0, Number(raw.boxDepthCm || 25)),
+    boxHeightCm: Math.max(0, Number(raw.boxHeightCm || 25)),
+    weightKg: Math.max(0, Number(raw.weightKg || 0)),
+    locationCode: raw.locationCode || '',
+    status: raw.status || 'pending',
+    createdAt: raw.createdAt || now(),
+  };
+}
+
+function createPackageRecords(product: ProductItem, count: number, locationCode: string, startIndex = 0): PackageRecord[] {
+  const safeCount = Math.max(0, Math.floor(Number(count) || 0));
+  return Array.from({ length: safeCount }, (_, index) => {
+    const packageIndex = startIndex + index + 1;
+    return {
+      packageId: `PKG-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${product.sku.replace(/[^A-Z0-9]/g, '')}-${String(packageIndex).padStart(3, '0')}`,
+      sku: product.sku,
+      productName: product.productName,
+      supplierCode: product.supplierCode,
+      category: product.category,
+      packageIndex,
+      totalPackages: Math.max(product.packageCount, packageIndex),
+      quantityInsidePackage: product.quantityInsidePackage,
+      boxWidthCm: product.boxWidthCm,
+      boxDepthCm: product.boxDepthCm,
+      boxHeightCm: product.boxHeightCm,
+      weightKg: product.weightKg,
+      locationCode,
+      status: 'placed',
+      createdAt: now(),
+    };
+  });
+}
+
 function normalizeLocationStock(raw: Partial<LocationStock>): LocationStock | null {
   const parsed = parseLocationCode(String(raw.locationCode || ''));
   if (!parsed) return null;
+  const packages = Array.isArray(raw.packages)
+    ? raw.packages.map((item) => normalizePackageRecord(item, raw.sku)).filter(Boolean) as PackageRecord[]
+    : [];
+  const capacityPackages = Math.max(1, Math.floor(Number(raw.capacityPackages || DEFAULT_LOCATION_CAPACITY)));
   const currentPackages = Math.min(
-    Math.max(0, Math.floor(Number(raw.currentPackages || 0))),
-    LOCATION_PACKAGE_CAPACITY,
+    Math.max(0, Math.floor(Number(raw.currentPackages ?? packages.length ?? 0))),
+    capacityPackages,
   );
   if (currentPackages <= 0) return null;
 
@@ -277,7 +506,7 @@ function normalizeLocationStock(raw: Partial<LocationStock>): LocationStock | nu
     rackCode: raw.rackCode || parsed.rackCode,
     shelfNumber: Number(raw.shelfNumber || parsed.shelfNumber),
     positionNumber: Number(raw.positionNumber || parsed.positionNumber),
-    capacityPackages: LOCATION_PACKAGE_CAPACITY,
+    capacityPackages,
     currentPackages,
     sku: normalizeSku(raw.sku),
     productName: raw.productName || '',
@@ -286,7 +515,11 @@ function normalizeLocationStock(raw: Partial<LocationStock>): LocationStock | nu
     lot: raw.lot || '',
     note: raw.note || '',
     quantityInsidePackage: Math.max(0, Math.floor(Number(raw.quantityInsidePackage || 0))),
-    packages: Array.isArray(raw.packages) ? raw.packages : undefined,
+    boxWidthCm: Math.max(0, Number(raw.boxWidthCm ?? packages[0]?.boxWidthCm ?? 36)),
+    boxDepthCm: Math.max(0, Number(raw.boxDepthCm ?? packages[0]?.boxDepthCm ?? 25)),
+    boxHeightCm: Math.max(0, Number(raw.boxHeightCm ?? packages[0]?.boxHeightCm ?? 25)),
+    weightKg: Math.max(0, Number(raw.weightKg ?? packages[0]?.weightKg ?? 0)),
+    packages: packages.length ? packages : undefined,
   };
 }
 
@@ -296,8 +529,8 @@ function makeLocationStock(product: ProductItem, location: LocationCode, package
     rackCode: location.rackCode,
     shelfNumber: location.shelfNumber,
     positionNumber: location.positionNumber,
-    capacityPackages: LOCATION_PACKAGE_CAPACITY,
-    currentPackages: Math.min(Math.max(0, Math.floor(packageCount)), LOCATION_PACKAGE_CAPACITY),
+    capacityPackages: location.capacityPackages,
+    currentPackages: Math.min(Math.max(0, Math.floor(packageCount)), location.capacityPackages),
     sku: product.sku,
     productName: product.productName,
     category: product.category,
@@ -305,19 +538,160 @@ function makeLocationStock(product: ProductItem, location: LocationCode, package
     lot: '',
     note: '',
     quantityInsidePackage: product.quantityInsidePackage,
+    boxWidthCm: product.boxWidthCm,
+    boxDepthCm: product.boxDepthCm,
+    boxHeightCm: product.boxHeightCm,
+    weightKg: product.weightKg,
+    packages: createPackageRecords(product, Math.min(Math.max(0, Math.floor(packageCount)), location.capacityPackages), location.locationCode),
+  };
+}
+
+function makeLocationStockFromImported(item: WarehouseImportedPackage, location: LocationCode): LocationStock {
+  const record = packageRecordFromImported(item, location.locationCode);
+  return {
+    locationCode: location.locationCode,
+    rackCode: location.rackCode,
+    shelfNumber: location.shelfNumber,
+    positionNumber: location.positionNumber,
+    capacityPackages: location.capacityPackages,
+    currentPackages: 1,
+    sku: item.sku,
+    productName: item.productName,
+    category: item.category,
+    supplierCode: item.productCode || item.sku,
+    lot: item.lot,
+    note: item.note,
+    quantityInsidePackage: item.quantityInsidePackage,
+    boxWidthCm: item.boxWidthCm,
+    boxDepthCm: item.boxDepthCm,
+    boxHeightCm: item.boxHeightCm,
+    weightKg: item.weightKg,
+    packages: [record],
+  };
+}
+
+function addImportedPackageToStock(stock: LocationStock, item: WarehouseImportedPackage, locationCode: string): LocationStock {
+  const packages = stock.packages || [];
+  if (packages.some((entry) => entry.packageId === item.packageId)) return stock;
+  const nextPackages = [...packages, packageRecordFromImported(item, locationCode)].slice(0, stock.capacityPackages);
+  return {
+    ...stock,
+    sku: item.sku,
+    productName: item.productName,
+    category: item.category,
+    supplierCode: item.productCode || item.sku,
+    lot: item.lot || stock.lot,
+    note: item.note || stock.note,
+    quantityInsidePackage: item.quantityInsidePackage,
+    boxWidthCm: item.boxWidthCm,
+    boxDepthCm: item.boxDepthCm,
+    boxHeightCm: item.boxHeightCm,
+    weightKg: item.weightKg,
+    currentPackages: Math.min(stock.capacityPackages, Math.max(stock.currentPackages + 1, nextPackages.length)),
+    packages: nextPackages,
   };
 }
 
 function mergeStockWithProduct(stock: LocationStock, product: ProductItem, packageCount: number): LocationStock {
+  const amount = Math.min(stock.capacityPackages - stock.currentPackages, Math.max(0, Math.floor(packageCount)));
+  const existingPackages = stock.packages || [];
   return {
     ...stock,
-    currentPackages: Math.min(stock.capacityPackages, stock.currentPackages + packageCount),
+    currentPackages: Math.min(stock.capacityPackages, stock.currentPackages + amount),
     sku: product.sku,
     productName: product.productName,
     category: product.category,
     supplierCode: product.supplierCode,
     quantityInsidePackage: product.quantityInsidePackage,
+    boxWidthCm: product.boxWidthCm,
+    boxDepthCm: product.boxDepthCm,
+    boxHeightCm: product.boxHeightCm,
+    weightKg: product.weightKg,
+    packages: [
+      ...existingPackages,
+      ...createPackageRecords(product, amount, stock.locationCode, existingPackages.length),
+    ],
   };
+}
+
+function parseDelimitedRows(input: string): Record<string, string>[] {
+  const lines = input
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length < 2) return [];
+
+  const delimiter = lines[0].includes(';') && !lines[0].includes(',') ? ';' : ',';
+  const parseLine = (line: string) => {
+    const cells: string[] = [];
+    let current = '';
+    let quoted = false;
+    for (let index = 0; index < line.length; index += 1) {
+      const char = line[index];
+      if (char === '"' && line[index + 1] === '"') {
+        current += '"';
+        index += 1;
+      } else if (char === '"') {
+        quoted = !quoted;
+      } else if (char === delimiter && !quoted) {
+        cells.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    cells.push(current.trim());
+    return cells;
+  };
+
+  const headers = parseLine(lines[0]).map((header) => header.trim());
+  return lines.slice(1).map((line) => {
+    const cells = parseLine(line);
+    return Object.fromEntries(headers.map((header, index) => [header, cells[index] || '']));
+  });
+}
+
+function packageFromManifestRow(row: Record<string, string>): PackageRecord | null {
+  return normalizePackageRecord({
+    packageId: row.packageId,
+    sku: row.sku,
+    productName: row.productName,
+    supplierCode: row.supplierCode,
+    category: row.category as ProductGroup,
+    packageIndex: Number(row.packageIndex || 1),
+    totalPackages: Number(row.totalPackages || 1),
+    quantityInsidePackage: Number(row.quantityInsidePackage || 0),
+    boxWidthCm: Number(row.boxWidthCm || 36),
+    boxDepthCm: Number(row.boxDepthCm || 25),
+    boxHeightCm: Number(row.boxHeightCm || 25),
+    weightKg: Number(row.weightKg || 0),
+    locationCode: row.locationCode,
+    status: row.status || 'pending',
+  });
+}
+
+function productsFromPackages(packages: PackageRecord[]): ProductItem[] {
+  const bySku = new Map<string, PackageRecord[]>();
+  packages.forEach((item) => {
+    bySku.set(item.sku, [...(bySku.get(item.sku) || []), item]);
+  });
+
+  return Array.from(bySku.entries()).map(([sku, items]) => {
+    const first = items[0];
+    return normalizeProduct({
+      sku,
+      productName: first.productName || sku,
+      supplierCode: first.supplierCode || sku,
+      category: first.category,
+      packageCount: items.length,
+      quantityInsidePackage: first.quantityInsidePackage,
+      boxWidthCm: first.boxWidthCm,
+      boxDepthCm: first.boxDepthCm,
+      boxHeightCm: first.boxHeightCm,
+      weightKg: first.weightKg,
+      packages: items,
+    });
+  });
 }
 
 function objectDefaults(type: WarehouseObject['type'], objects: WarehouseObject[]): WarehouseObjectNoId {
@@ -344,13 +718,21 @@ function objectDefaults(type: WarehouseObject['type'], objects: WarehouseObject[
       width: 1.8,
       depth: 0.6,
       height: 1.8,
+      widthCm: 180,
+      depthCm: 60,
+      heightCm: 180,
       rackGroup: identity.rackGroup,
       rackNumber: identity.rackNumber,
       rackCode: identity.rackCode,
       shelfCount: 4,
       binsPerShelf: 7,
+      positionsPerShelf: 7,
+      defaultLocationCapacity: DEFAULT_LOCATION_CAPACITY,
+      depthSlots: 2,
+      stackLevels: 1,
       orientation: 'horizontal',
       productGroup: 'Karışık' as ProductGroup,
+      productCategory: 'Karışık' as ProductGroup,
       showDimensions: true,
     };
   }
@@ -467,10 +849,24 @@ function normalizeObject(
     normalized.rackGroup = identity.rackGroup;
     normalized.rackNumber = identity.rackNumber;
     normalized.rackCode = identity.rackCode;
+    normalized.widthCm = Math.max(1, Number(rawRack.widthCm ?? normalized.width * 100));
+    normalized.depthCm = Math.max(1, Number(rawRack.depthCm ?? normalized.depth * 100));
+    normalized.heightCm = Math.max(1, Number(rawRack.heightCm ?? normalized.height * 100));
+    normalized.width = normalized.widthCm / 100;
+    normalized.depth = normalized.depthCm / 100;
+    normalized.height = normalized.heightCm / 100;
     normalized.shelfCount = Math.max(1, Math.floor(Number(rawRack.shelfCount ?? rawRack.shelves ?? 4)));
-    normalized.binsPerShelf = Math.max(1, Math.floor(Number(normalized.binsPerShelf || 7)));
+    normalized.positionsPerShelf = Math.max(1, Math.floor(Number(rawRack.positionsPerShelf ?? rawRack.binsPerShelf ?? 7)));
+    normalized.binsPerShelf = normalized.positionsPerShelf;
+    normalized.depthSlots = Math.max(1, Math.floor(Number(rawRack.depthSlots ?? 2)));
+    normalized.stackLevels = Math.max(1, Math.floor(Number(rawRack.stackLevels ?? 1)));
+    normalized.defaultLocationCapacity = Math.max(
+      1,
+      Math.floor(Number(rawRack.defaultLocationCapacity ?? normalized.depthSlots * normalized.stackLevels ?? DEFAULT_LOCATION_CAPACITY)),
+    );
     normalized.orientation = normalized.orientation || 'horizontal';
-    normalized.productGroup = normalized.productGroup || 'Karışık';
+    normalized.productGroup = normalizeProductGroup(normalized.productGroup);
+    normalized.productCategory = normalizeProductGroup(rawRack.productCategory || normalized.productGroup);
     normalized.showDimensions = normalized.showDimensions ?? true;
     if (!raw.name) normalized.name = `${normalized.rackCode} Rafı`;
     delete (normalized as Rack & { code?: string }).code;
@@ -504,6 +900,8 @@ function makePlan(
   unitPreference: UnitPreference,
   products: ProductItem[] = [],
   locationStocks: LocationStock[] = [],
+  importedPackages: WarehouseImportedPackage[] = [],
+  locationCapacityOverrides: LocationCapacityOverride[] = [],
 ): WarehousePlan {
   const timestamp = now();
   return {
@@ -516,6 +914,8 @@ function makePlan(
     objects,
     products,
     locationStocks,
+    importedPackages,
+    locationCapacityOverrides,
     locationCodeSettings: normalizeLocationCodeSettings(),
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -530,12 +930,12 @@ function createSampleObjects(): WarehouseObject[] {
   };
 
   [
-    ['A', 1, 0.35, 0.45, 'Alüminyum'],
-    ['A', 2, 3.0, 0.45, 'Alüminyum'],
-    ['B', 1, 0.35, 2.15, 'Döküm'],
-    ['C', 1, 3.0, 2.15, 'Karbon Çelik'],
-    ['C', 2, 0.35, 3.85, 'PPR'],
-  ].forEach(([rackGroup, rackNumber, x, z, productGroup]) => {
+    ['A', 1, 0.35, 0.45, 'Alüminyum', 2, 2, 1, 7, 4],
+    ['A', 2, 3.0, 0.45, 'Alüminyum', 2, 2, 1, 7, 4],
+    ['B', 1, 0.35, 2.15, 'Döküm', 1, 1, 1, 5, 3],
+    ['C', 1, 3.0, 2.15, 'Karbon Çelik', 4, 2, 2, 7, 4],
+    ['C', 2, 0.35, 3.85, 'PPR', 2, 2, 1, 7, 4],
+  ].forEach(([rackGroup, rackNumber, x, z, productGroup, capacity, depthSlots, stackLevels, positionsPerShelf, shelfCount]) => {
     const rackCode = buildRackCode(String(rackGroup), Number(rackNumber));
     push({
       ...(objectDefaults('rack', objects) as Omit<WarehouseObject, 'id'>),
@@ -549,10 +949,18 @@ function createSampleObjects(): WarehouseObject[] {
       width: 1.8,
       depth: 0.6,
       height: 1.8,
-      shelfCount: 4,
-      binsPerShelf: 7,
+      widthCm: 180,
+      depthCm: 60,
+      heightCm: 180,
+      shelfCount: Number(shelfCount),
+      binsPerShelf: Number(positionsPerShelf),
+      positionsPerShelf: Number(positionsPerShelf),
+      defaultLocationCapacity: Number(capacity),
+      depthSlots: Number(depthSlots),
+      stackLevels: Number(stackLevels),
       orientation: 'horizontal',
       productGroup: productGroup as ProductGroup,
+      productCategory: productGroup as ProductGroup,
       showDimensions: true,
       color: '#2563eb',
     });
@@ -643,9 +1051,10 @@ function createSampleProducts(): ProductItem[] {
       category: 'Alüminyum',
       packageCount: 10,
       quantityInsidePackage: 75,
-      packageWidthCm: 36,
-      packageDepthCm: 25,
-      packageHeightCm: 25,
+      boxWidthCm: 36,
+      boxDepthCm: 25,
+      boxHeightCm: 25,
+      weightKg: 8,
     }),
     normalizeProduct({
       sku: 'DK-220-A',
@@ -654,9 +1063,10 @@ function createSampleProducts(): ProductItem[] {
       category: 'Döküm',
       packageCount: 5,
       quantityInsidePackage: 20,
-      packageWidthCm: 36,
-      packageDepthCm: 25,
-      packageHeightCm: 25,
+      boxWidthCm: 36,
+      boxDepthCm: 25,
+      boxHeightCm: 25,
+      weightKg: 12,
     }),
   ];
 }
@@ -668,13 +1078,13 @@ function createSampleLocationStocks(objects: WarehouseObject[], products: Produc
   const dk = products.find((product) => product.sku === 'DK-220-A');
   const stocks: LocationStock[] = [];
   if (al) {
-    [['A1-K1-P1', 4], ['A1-K1-P2', 4], ['A1-K1-P3', 2]].forEach(([code, count]) => {
+    [['A1-K1-P1', 2], ['A1-K1-P2', 2], ['A1-K1-P3', 2], ['A1-K1-P4', 2], ['A1-K1-P5', 2]].forEach(([code, count]) => {
       const location = byCode.get(String(code));
       if (location) stocks.push(makeLocationStock(al, location, Number(count)));
     });
   }
   if (dk) {
-    [['B1-K1-P1', 4], ['B1-K1-P2', 1]].forEach(([code, count]) => {
+    [['B1-K1-P1', 1], ['B1-K1-P2', 1], ['B1-K1-P3', 1], ['B1-K1-P4', 1], ['B1-K1-P5', 1]].forEach(([code, count]) => {
       const location = byCode.get(String(code));
       if (location) stocks.push(makeLocationStock(dk, location, Number(count)));
     });
@@ -698,6 +1108,20 @@ function migratePlan(raw: any): WarehousePlan | null {
     const locationStocks = Array.isArray(raw.locationStocks)
       ? raw.locationStocks.map(normalizeLocationStock).filter(Boolean) as LocationStock[]
       : [];
+    const importedPackages = Array.isArray(raw.importedPackages)
+      ? raw.importedPackages
+          .map((item: Partial<WarehouseImportedPackage> & Record<string, unknown>) => normalizeImportedPackage(item))
+          .filter(Boolean) as WarehouseImportedPackage[]
+      : [];
+    const locationCapacityOverrides = Array.isArray(raw.locationCapacityOverrides)
+      ? raw.locationCapacityOverrides
+          .map((override: Partial<LocationCapacityOverride>) => ({
+            locationCode: String(override.locationCode || '').trim().toUpperCase(),
+            capacityPackages: Math.max(1, Math.floor(Number(override.capacityPackages || DEFAULT_LOCATION_CAPACITY))),
+            note: override.note || '',
+          }))
+          .filter((override: LocationCapacityOverride) => Boolean(parseLocationCode(override.locationCode)))
+      : [];
     return {
       version: APP_VERSION,
       id: raw.id || generateId(),
@@ -708,6 +1132,8 @@ function migratePlan(raw: any): WarehousePlan | null {
       objects,
       products,
       locationStocks,
+      importedPackages,
+      locationCapacityOverrides,
       locationCodeSettings: normalizeLocationCodeSettings(raw.locationCodeSettings),
       createdAt: raw.createdAt || now(),
       updatedAt: raw.updatedAt || now(),
@@ -799,7 +1225,13 @@ function stateFromPlan(
       objects: [],
       products: [],
       locationStocks: [],
+      importedPackages: [],
+      locationCapacityOverrides: [],
       selectedLocationCode: null,
+      selectedPackageId: null,
+      packageSearchQuery: '',
+      highlightedPackageIds: [],
+      focusedLocationCode: null,
       selectedId: null,
       plans: planSummaries(plans),
       activePlanId: null,
@@ -808,6 +1240,7 @@ function stateFromPlan(
       saveStatus,
       sharedSyncStatus,
       placementStatus: '',
+      packagePlacementStatus: null,
     };
   }
 
@@ -820,7 +1253,13 @@ function stateFromPlan(
     objects: plan.objects,
     products: plan.products,
     locationStocks: plan.locationStocks,
+    importedPackages: plan.importedPackages || [],
+    locationCapacityOverrides: plan.locationCapacityOverrides,
     selectedLocationCode: null,
+    selectedPackageId: null,
+    packageSearchQuery: '',
+    highlightedPackageIds: [],
+    focusedLocationCode: null,
     selectedId: null,
     plans: planSummaries(plans),
     activePlanId: plan.id,
@@ -829,6 +1268,7 @@ function stateFromPlan(
     saveStatus,
     sharedSyncStatus,
     placementStatus: '',
+    packagePlacementStatus: null,
   };
 }
 
@@ -851,6 +1291,8 @@ function savePlanInState(state: StoreState, patch: Partial<StoreState>): Partial
     objects: patch.objects || state.objects,
     products: patch.products || state.products,
     locationStocks: patch.locationStocks || state.locationStocks,
+    importedPackages: patch.importedPackages || state.importedPackages,
+    locationCapacityOverrides: patch.locationCapacityOverrides || state.locationCapacityOverrides,
     locationCodeSettings: patch.locationCodeSettings || state.locationCodeSettings,
     updatedAt: now(),
   };
@@ -873,6 +1315,8 @@ function savePlanInState(state: StoreState, patch: Partial<StoreState>): Partial
     objects: updatedPlan.objects,
     products: updatedPlan.products,
     locationStocks: updatedPlan.locationStocks,
+    importedPackages: updatedPlan.importedPackages,
+    locationCapacityOverrides: updatedPlan.locationCapacityOverrides,
     locationCodeSettings: updatedPlan.locationCodeSettings,
     warnings,
     plans: planSummaries(nextFullPlans),
@@ -916,7 +1360,13 @@ export const useStore = create<StoreState>((set, get) => {
     objects: activePlan?.objects || [],
     products: activePlan?.products || [],
     locationStocks: activePlan?.locationStocks || [],
+    importedPackages: activePlan?.importedPackages || [],
+    locationCapacityOverrides: activePlan?.locationCapacityOverrides || [],
     selectedLocationCode: null,
+    selectedPackageId: null,
+    packageSearchQuery: '',
+    highlightedPackageIds: [],
+    focusedLocationCode: null,
     selectedId: null,
     viewMode: '2D',
     plans: planSummaries(persistedData.plans),
@@ -926,6 +1376,7 @@ export const useStore = create<StoreState>((set, get) => {
     saveStatus: activePlan ? 'Kaydedildi' : 'Plan bekleniyor',
     sharedSyncStatus: activePlan ? 'Yerel kayıt yüklendi' : 'Ortak kayıt bekleniyor',
     placementStatus: '',
+    packagePlacementStatus: null,
 
     loadSharedState: async () => {
       set({ sharedSyncStatus: 'Ortak kayıt okunuyor...' });
@@ -969,7 +1420,13 @@ export const useStore = create<StoreState>((set, get) => {
         objects: [],
         products: [],
         locationStocks: [],
+        importedPackages: [],
+        locationCapacityOverrides: [],
         selectedLocationCode: null,
+        selectedPackageId: null,
+        packageSearchQuery: '',
+        highlightedPackageIds: [],
+        focusedLocationCode: null,
         selectedId: null,
         plans: planSummaries(plans),
         activePlanId: plan.id,
@@ -998,7 +1455,13 @@ export const useStore = create<StoreState>((set, get) => {
         objects,
         products,
         locationStocks,
+        importedPackages: [],
+        locationCapacityOverrides: [],
         selectedLocationCode: null,
+        selectedPackageId: null,
+        packageSearchQuery: '',
+        highlightedPackageIds: [],
+        focusedLocationCode: null,
         selectedId: null,
         plans: planSummaries(plans),
         activePlanId: plan.id,
@@ -1014,7 +1477,13 @@ export const useStore = create<StoreState>((set, get) => {
       const next = savePlanInState(state, {
         objects: [],
         locationStocks: [],
+        importedPackages: [],
+        locationCapacityOverrides: [],
         selectedLocationCode: null,
+        selectedPackageId: null,
+        packageSearchQuery: '',
+        highlightedPackageIds: [],
+        focusedLocationCode: null,
         selectedId: null,
       });
       return { ...next, saveStatus: 'Plan sıfırlandı', sharedSyncStatus: 'Ortak kayda yazılıyor' };
@@ -1032,6 +1501,8 @@ export const useStore = create<StoreState>((set, get) => {
         objects: source.objects.map((object) => ({ ...object, id: generateId() })) as WarehouseObject[],
         products: source.products.map((product) => ({ ...product, id: generateId() })),
         locationStocks: source.locationStocks.map((stock) => ({ ...stock })),
+        importedPackages: (source.importedPackages || []).map((item) => ({ ...item, placement: item.placement ? { ...item.placement } : null })),
+        locationCapacityOverrides: source.locationCapacityOverrides.map((override) => ({ ...override })),
         createdAt: timestamp,
         updatedAt: timestamp,
       };
@@ -1047,7 +1518,13 @@ export const useStore = create<StoreState>((set, get) => {
         objects: copy.objects,
         products: copy.products,
         locationStocks: copy.locationStocks,
+        importedPackages: copy.importedPackages,
+        locationCapacityOverrides: copy.locationCapacityOverrides,
         selectedLocationCode: null,
+        selectedPackageId: null,
+        packageSearchQuery: '',
+        highlightedPackageIds: [],
+        focusedLocationCode: null,
         selectedId: null,
         plans: planSummaries(plans),
         activePlanId: copy.id,
@@ -1073,7 +1550,13 @@ export const useStore = create<StoreState>((set, get) => {
           objects: [],
           products: [],
           locationStocks: [],
+          importedPackages: [],
+          locationCapacityOverrides: [],
           selectedLocationCode: null,
+          selectedPackageId: null,
+          packageSearchQuery: '',
+          highlightedPackageIds: [],
+          focusedLocationCode: null,
           selectedId: null,
           plans: [],
           activePlanId: null,
@@ -1092,7 +1575,13 @@ export const useStore = create<StoreState>((set, get) => {
         objects: nextActive.objects,
         products: nextActive.products,
         locationStocks: nextActive.locationStocks,
+        importedPackages: nextActive.importedPackages || [],
+        locationCapacityOverrides: nextActive.locationCapacityOverrides,
         selectedLocationCode: null,
+        selectedPackageId: null,
+        packageSearchQuery: '',
+        highlightedPackageIds: [],
+        focusedLocationCode: null,
         selectedId: null,
         plans: planSummaries(plans),
         activePlanId: nextActive.id,
@@ -1116,7 +1605,13 @@ export const useStore = create<StoreState>((set, get) => {
         objects: plan.objects,
         products: plan.products,
         locationStocks: plan.locationStocks,
+        importedPackages: plan.importedPackages || [],
+        locationCapacityOverrides: plan.locationCapacityOverrides,
         selectedLocationCode: null,
+        selectedPackageId: null,
+        packageSearchQuery: '',
+        highlightedPackageIds: [],
+        focusedLocationCode: null,
         selectedId: null,
         activePlanId: plan.id,
         hasActivePlan: true,
@@ -1208,7 +1703,8 @@ export const useStore = create<StoreState>((set, get) => {
       if (remaining <= 0) return { placementStatus: 'Yerleştirilecek paket sayısı 0’dan büyük olmalı.' };
 
       let locationStocks = [...state.locationStocks];
-      const buildLocations = () => generateAllLocationCodes(state.objects, state.locationCodeSettings, locationStocks);
+      const buildLocations = () =>
+        generateAllLocationCodes(state.objects, state.locationCodeSettings, locationStocks, state.locationCapacityOverrides);
       const placeInto = (location: LocationCode) => {
         if (remaining <= 0) return;
         const existingIndex = locationStocks.findIndex((stock) => stock.locationCode === location.locationCode);
@@ -1216,7 +1712,7 @@ export const useStore = create<StoreState>((set, get) => {
         if (existing && existing.sku !== product.sku && existing.currentPackages > 0) return;
 
         const currentPackages = existing?.currentPackages || 0;
-        const free = LOCATION_PACKAGE_CAPACITY - currentPackages;
+        const free = location.capacityPackages - currentPackages;
         const amount = Math.min(free, remaining);
         if (amount <= 0) return;
 
@@ -1231,7 +1727,7 @@ export const useStore = create<StoreState>((set, get) => {
       };
 
       buildLocations()
-        .filter((location) => location.sku === product.sku && location.currentPackages > 0 && location.currentPackages < LOCATION_PACKAGE_CAPACITY)
+        .filter((location) => location.sku === product.sku && location.currentPackages > 0 && location.currentPackages < location.capacityPackages)
         .forEach(placeInto);
       buildLocations()
         .filter((location) => location.currentPackages === 0 && location.productGroup === product.category)
@@ -1252,7 +1748,12 @@ export const useStore = create<StoreState>((set, get) => {
 
     placeProductInLocation: (productId, locationCode, packageCount) => set((state) => {
       const product = state.products.find((item) => item.id === productId);
-      const location = generateAllLocationCodes(state.objects, state.locationCodeSettings, state.locationStocks)
+      const location = generateAllLocationCodes(
+        state.objects,
+        state.locationCodeSettings,
+        state.locationStocks,
+        state.locationCapacityOverrides,
+      )
         .find((item) => item.locationCode === locationCode);
       if (!product || !location) return state;
       const amount = Math.max(0, Math.floor(Number(packageCount) || 0));
@@ -1263,7 +1764,7 @@ export const useStore = create<StoreState>((set, get) => {
         return { placementStatus: 'Bu lokasyonda farklı SKU var. Karışık SKU’ya izin verilmez.' };
       }
       const currentPackages = existing?.currentPackages || 0;
-      const free = LOCATION_PACKAGE_CAPACITY - currentPackages;
+      const free = location.capacityPackages - currentPackages;
       const placed = Math.min(free, amount);
       if (placed <= 0) return { placementStatus: `${locationCode} dolu.` };
 
@@ -1289,19 +1790,35 @@ export const useStore = create<StoreState>((set, get) => {
         : state.locationStocks.map((item) => item.locationCode === locationCode ? { ...item, currentPackages: nextCount } : item);
       return savePlanInState(state, {
         locationStocks,
-        placementStatus: `${locationCode}: doluluk ${nextCount}/${LOCATION_PACKAGE_CAPACITY}.`,
+        placementStatus: `${locationCode}: doluluk ${nextCount}/${stock.capacityPackages}.`,
       });
     }),
 
-    clearLocation: (locationCode) => set((state) => savePlanInState(state, {
-      locationStocks: state.locationStocks.filter((stock) => stock.locationCode !== locationCode),
-      placementStatus: `${locationCode} boşaltıldı.`,
-    })),
+    clearLocation: (locationCode) => set((state) => {
+      const stock = state.locationStocks.find((item) => item.locationCode === locationCode);
+      const packageIds = new Set((stock?.packages || []).map((item) => item.packageId));
+      const importedPackages = packageIds.size
+        ? state.importedPackages.map((item) =>
+            packageIds.has(item.packageId) ? { ...item, status: 'unplaced' as const, placement: null } : item,
+          )
+        : state.importedPackages;
+      return savePlanInState(state, {
+        locationStocks: state.locationStocks.filter((item) => item.locationCode !== locationCode),
+        importedPackages,
+        placementStatus: `${locationCode} boşaltıldı.`,
+        packagePlacementStatus: `${locationCode} içindeki import paketleri yerleşmemiş listeye alındı.`,
+      });
+    }),
 
     moveLocationStock: (fromLocationCode, toLocationCode) => set((state) => {
       if (fromLocationCode === toLocationCode) return state;
       const source = state.locationStocks.find((stock) => stock.locationCode === fromLocationCode);
-      const targetLocation = generateAllLocationCodes(state.objects, state.locationCodeSettings, state.locationStocks)
+      const targetLocation = generateAllLocationCodes(
+        state.objects,
+        state.locationCodeSettings,
+        state.locationStocks,
+        state.locationCapacityOverrides,
+      )
         .find((location) => location.locationCode === toLocationCode);
       if (!source || !targetLocation) return { placementStatus: 'Taşınacak kaynak veya hedef lokasyon bulunamadı.' };
       const target = state.locationStocks.find((stock) => stock.locationCode === toLocationCode);
@@ -1309,7 +1826,7 @@ export const useStore = create<StoreState>((set, get) => {
         return { placementStatus: 'Hedef lokasyonda farklı SKU var. Karışık SKU’ya izin verilmez.' };
       }
 
-      const free = LOCATION_PACKAGE_CAPACITY - (target?.currentPackages || 0);
+      const free = targetLocation.capacityPackages - (target?.currentPackages || 0);
       const moved = Math.min(free, source.currentPackages);
       if (moved <= 0) return { placementStatus: `${toLocationCode} dolu.` };
 
@@ -1319,6 +1836,10 @@ export const useStore = create<StoreState>((set, get) => {
         supplierCode: source.supplierCode,
         category: source.category,
         quantityInsidePackage: source.quantityInsidePackage,
+        boxWidthCm: source.boxWidthCm,
+        boxDepthCm: source.boxDepthCm,
+        boxHeightCm: source.boxHeightCm,
+        weightKg: source.weightKg,
       });
       let locationStocks = state.locationStocks
         .map((stock) =>
@@ -1341,6 +1862,372 @@ export const useStore = create<StoreState>((set, get) => {
         selectedLocationCode: toLocationCode,
         placementStatus: `${fromLocationCode} → ${toLocationCode}: ${moved} paket taşındı.`,
       });
+    }),
+
+    setLocationCapacity: (locationCode, capacityPackages) => set((state) => {
+      const parsed = parseLocationCode(locationCode);
+      if (!parsed) return { placementStatus: 'Lokasyon kodu geçersiz.' };
+      const capacity = Math.max(1, Math.floor(Number(capacityPackages) || 1));
+      const existingStock = state.locationStocks.find((stock) => stock.locationCode === locationCode);
+      const locationStocks = existingStock
+        ? state.locationStocks.map((stock) =>
+            stock.locationCode === locationCode
+              ? {
+                  ...stock,
+                  capacityPackages: capacity,
+                  currentPackages: Math.min(stock.currentPackages, capacity),
+                  packages: stock.packages?.slice(0, capacity),
+                }
+              : stock,
+          )
+        : state.locationStocks;
+      const locationCapacityOverrides = [
+        ...state.locationCapacityOverrides.filter((override) => override.locationCode !== locationCode),
+        { locationCode, capacityPackages: capacity },
+      ];
+
+      return savePlanInState(state, {
+        locationStocks,
+        locationCapacityOverrides,
+        selectedLocationCode: locationCode,
+        placementStatus: `${locationCode}: kapasite ${capacity} paket olarak ayarlandı.`,
+      });
+    }),
+
+    applyRackCapacity: (rackId, mode) => set((state) => {
+      const rack = state.objects.find((object): object is Rack => object.id === rackId && object.type === 'rack');
+      if (!rack) return state;
+      const rackLocations = generateRackLocationCodes(
+        rack,
+        state.locationCodeSettings,
+        state.locationStocks,
+        state.locationCapacityOverrides,
+      );
+      const rackCodes = new Set(rackLocations.map((location) => location.locationCode));
+      const capacity = getRackDefaultLocationCapacity(rack);
+      let locationStocks = state.locationStocks;
+
+      if (mode === 'all') {
+        locationStocks = state.locationStocks.map((stock) =>
+          rackCodes.has(stock.locationCode)
+            ? {
+                ...stock,
+                capacityPackages: capacity,
+                currentPackages: Math.min(stock.currentPackages, capacity),
+                packages: stock.packages?.slice(0, capacity),
+              }
+            : stock,
+        );
+      }
+
+      const filledCodes = new Set(locationStocks.filter((stock) => stock.currentPackages > 0).map((stock) => stock.locationCode));
+      const locationCapacityOverrides = state.locationCapacityOverrides.filter((override) => {
+        if (!rackCodes.has(override.locationCode)) return true;
+        if (mode === 'preserve' && filledCodes.has(override.locationCode)) return true;
+        return false;
+      });
+
+      return savePlanInState(state, {
+        locationStocks,
+        locationCapacityOverrides,
+        placementStatus:
+          mode === 'all'
+            ? `${rack.rackCode}: kapasite tüm lokasyonlara uygulandı.`
+            : mode === 'empty'
+              ? `${rack.rackCode}: boş lokasyonlar raf varsayılan kapasitesine döndü.`
+              : `${rack.rackCode}: dolu lokasyonlar korunarak kapasite yeniden hesaplandı.`,
+      });
+    }),
+
+    importPackageManifest: (csvString) => {
+      try {
+        const packages = parseDelimitedRows(csvString).map(packageFromManifestRow).filter(Boolean) as PackageRecord[];
+        if (!packages.length) return false;
+        set((state) => {
+          const importedProducts = productsFromPackages(packages);
+          const products = [...state.products];
+          importedProducts.forEach((incoming) => {
+            const index = products.findIndex((product) => product.sku === incoming.sku);
+            if (index >= 0) {
+              products[index] = normalizeProduct({
+                ...products[index],
+                ...incoming,
+                id: products[index].id,
+                packageCount: incoming.packageCount,
+                packages: [...(products[index].packages || []), ...(incoming.packages || [])],
+                updatedAt: now(),
+              });
+            } else {
+              products.push(incoming);
+            }
+          });
+
+          let locationStocks = [...state.locationStocks];
+          packages
+            .filter((item) => item.locationCode && item.status !== 'pending')
+            .forEach((item) => {
+              const product = products.find((entry) => entry.sku === item.sku);
+              const location = generateAllLocationCodes(
+                state.objects,
+                state.locationCodeSettings,
+                locationStocks,
+                state.locationCapacityOverrides,
+              ).find((entry) => entry.locationCode === item.locationCode);
+              if (!product || !location) return;
+              const existing = locationStocks.find((stock) => stock.locationCode === item.locationCode);
+              if (existing && existing.sku !== item.sku && existing.currentPackages > 0) return;
+              if (existing) {
+                locationStocks = locationStocks.map((stock) =>
+                  stock.locationCode === item.locationCode
+                    ? {
+                        ...mergeStockWithProduct(stock, product, 1),
+                        packages: [...(stock.packages || []), { ...item, status: 'placed' }].slice(0, stock.capacityPackages),
+                      }
+                    : stock,
+                );
+              } else {
+                locationStocks.push({
+                  ...makeLocationStock(product, location, 1),
+                  packages: [{ ...item, status: 'placed' }],
+                });
+              }
+            });
+
+          return savePlanInState(state, {
+            products,
+            locationStocks,
+            placementStatus: `Label-Printer manifestinden ${packages.length} paket içe aktarıldı.`,
+          });
+        });
+        return true;
+      } catch (error) {
+        console.error('Manifest içe aktarma başarısız', error);
+        return false;
+      }
+    },
+
+    importPackagesExport: (jsonText) => {
+      let result: PackageImportResult = {
+        success: false,
+        added: 0,
+        skipped: 0,
+        updated: 0,
+        message: 'Paket import edilemedi.',
+      };
+
+      try {
+        const parsed = JSON.parse(jsonText) as WarehousePackagesExport;
+        if (parsed.schemaVersion !== 'label-printer.packages.v1') {
+          result = {
+            ...result,
+            error: 'Sadece label-printer.packages.v1 şeması desteklenir.',
+            message: 'Geçersiz Label Printer paket dosyası.',
+          };
+          set({ packagePlacementStatus: result.message });
+          return result;
+        }
+
+        if (!Array.isArray(parsed.packages)) {
+          result = {
+            ...result,
+            error: 'packages array bulunamadı.',
+            message: 'Dosyada packages listesi yok.',
+          };
+          set({ packagePlacementStatus: result.message });
+          return result;
+        }
+
+        const importedAt = now();
+        set((state) => {
+          if (!state.hasActivePlan) {
+            result = {
+              ...result,
+              message: 'Önce bir depo planı oluşturun veya örnek plan yükleyin.',
+              error: 'Aktif plan yok.',
+            };
+            return state;
+          }
+
+          const existingIds = new Set(state.importedPackages.map((item) => item.packageId));
+          const incoming: WarehouseImportedPackage[] = [];
+          let skipped = 0;
+
+          parsed.packages.forEach((raw) => {
+            const normalized = normalizeImportedPackage(raw, importedAt, true);
+            if (!normalized || existingIds.has(normalized.packageId)) {
+              skipped += 1;
+              return;
+            }
+            existingIds.add(normalized.packageId);
+            incoming.push(normalized);
+          });
+
+          result = {
+            success: incoming.length > 0,
+            added: incoming.length,
+            skipped,
+            updated: 0,
+            message: `${incoming.length} paket içe aktarıldı, ${skipped} duplicate/eksik paket atlandı.`,
+          };
+
+          return savePlanInState(state, {
+            importedPackages: [...state.importedPackages, ...incoming],
+            packagePlacementStatus: result.message,
+          });
+        });
+
+        return result;
+      } catch (error) {
+        result = {
+          ...result,
+          error: error instanceof Error ? error.message : 'JSON okunamadı.',
+          message: 'packages-export.json okunamadı.',
+        };
+        set({ packagePlacementStatus: result.message });
+        return result;
+      }
+    },
+
+    selectPackage: (packageId) => set((state) => ({
+      selectedPackageId: packageId,
+      highlightedPackageIds: packageId ? [packageId] : state.highlightedPackageIds,
+    })),
+
+    setPackageSearchQuery: (query) => set((state) => {
+      const highlightedPackageIds = query.trim()
+        ? state.importedPackages.filter((item) => packageMatchesQuery(item, query)).map((item) => item.packageId)
+        : [];
+      return {
+        packageSearchQuery: query,
+        highlightedPackageIds,
+      };
+    }),
+
+    placeImportedPackage: (packageId, locationCode) => set((state) => {
+      const item = state.importedPackages.find((entry) => entry.packageId === packageId);
+      if (!item) return { packagePlacementStatus: 'Paket bulunamadı.' };
+      const location = generateAllLocationCodes(
+        state.objects,
+        state.locationCodeSettings,
+        state.locationStocks,
+        state.locationCapacityOverrides,
+      ).find((entry) => entry.locationCode === locationCode);
+      if (!location) return { packagePlacementStatus: 'Lokasyon bulunamadı.' };
+
+      const existing = state.locationStocks.find((stock) => stock.locationCode === locationCode);
+      if (existing && existing.currentPackages > 0 && existing.sku !== item.sku) {
+        return { packagePlacementStatus: 'Bu lokasyonda farklı SKU var. Karışık SKU’ya izin verilmez.' };
+      }
+      if ((existing?.currentPackages || 0) >= location.capacityPackages) {
+        return { packagePlacementStatus: `${locationCode} dolu.` };
+      }
+
+      let locationStocks = state.locationStocks;
+      let importedPackages = state.importedPackages;
+
+      if (item.placement?.locationCode) {
+        const previousLocationCode = item.placement.locationCode;
+        locationStocks = locationStocks
+          .map((stock) => {
+            if (stock.locationCode !== previousLocationCode) return stock;
+            const packages = (stock.packages || []).filter((entry) => entry.packageId !== item.packageId);
+            return {
+              ...stock,
+              packages,
+              currentPackages: packages.length ? Math.min(stock.capacityPackages, packages.length) : Math.max(0, stock.currentPackages - 1),
+            };
+          })
+          .filter((stock) => stock.currentPackages > 0);
+      }
+
+      const existingAfterMove = locationStocks.find((stock) => stock.locationCode === locationCode);
+      locationStocks = existingAfterMove
+        ? locationStocks.map((stock) =>
+            stock.locationCode === locationCode ? addImportedPackageToStock(stock, item, locationCode) : stock,
+          )
+        : [...locationStocks, makeLocationStockFromImported(item, location)];
+
+      const placement: PackagePlacement = {
+        locationCode,
+        rackCode: location.rackCode,
+        placedAt: now(),
+      };
+      importedPackages = importedPackages.map((entry) =>
+        entry.packageId === packageId
+          ? { ...entry, status: 'placed', placement }
+          : entry,
+      );
+
+      return savePlanInState(state, {
+        locationStocks,
+        importedPackages,
+        selectedPackageId: packageId,
+        selectedLocationCode: locationCode,
+        focusedLocationCode: locationCode,
+        highlightedPackageIds: [packageId],
+        packagePlacementStatus: `${item.packageId} paketi ${locationCode} lokasyonuna yerleştirildi.`,
+      });
+    }),
+
+    unplaceImportedPackage: (packageId) => set((state) => {
+      const item = state.importedPackages.find((entry) => entry.packageId === packageId);
+      if (!item) return { packagePlacementStatus: 'Paket bulunamadı.' };
+      const locationCode = item.placement?.locationCode;
+      const locationStocks = locationCode
+        ? state.locationStocks
+            .map((stock) => {
+              if (stock.locationCode !== locationCode) return stock;
+              const packages = (stock.packages || []).filter((entry) => entry.packageId !== packageId);
+              return {
+                ...stock,
+                packages,
+                currentPackages: packages.length ? Math.min(stock.capacityPackages, packages.length) : Math.max(0, stock.currentPackages - 1),
+              };
+            })
+            .filter((stock) => stock.currentPackages > 0)
+        : state.locationStocks;
+      const importedPackages = state.importedPackages.map((entry) =>
+        entry.packageId === packageId
+          ? { ...entry, status: 'unplaced' as const, placement: null }
+          : entry,
+      );
+
+      return savePlanInState(state, {
+        locationStocks,
+        importedPackages,
+        selectedPackageId: packageId,
+        highlightedPackageIds: [packageId],
+        focusedLocationCode: null,
+        packagePlacementStatus: `${item.packageId} yerleşimi kaldırıldı.`,
+      });
+    }),
+
+    focusPackage: (packageId) => set((state) => {
+      const item = state.importedPackages.find((entry) => entry.packageId === packageId);
+      if (!item) return { packagePlacementStatus: 'Paket bulunamadı.' };
+      const locationCode = item.placement?.locationCode || null;
+      const rackCode = item.placement?.rackCode || (locationCode ? parseLocationCode(locationCode)?.rackCode : null);
+      const rack = rackCode
+        ? state.objects.find((object) => object.type === 'rack' && object.rackCode === rackCode)
+        : null;
+
+      return {
+        selectedPackageId: packageId,
+        highlightedPackageIds: [packageId],
+        focusedLocationCode: locationCode,
+        selectedLocationCode: locationCode,
+        selectedId: rack?.id || state.selectedId,
+        viewMode: locationCode ? '3D' : state.viewMode,
+        packagePlacementStatus: locationCode
+          ? `${item.packageId} için ${locationCode} lokasyonuna odaklanıldı.`
+          : `${item.packageId} henüz yerleşmemiş.`,
+      };
+    }),
+
+    clearPackageHighlights: () => set({
+      highlightedPackageIds: [],
+      focusedLocationCode: null,
+      packageSearchQuery: '',
     }),
 
     selectLocation: (locationCode) => set({ selectedLocationCode: locationCode }),
@@ -1382,6 +2269,9 @@ export const useStore = create<StoreState>((set, get) => {
             width: options.width,
             depth: options.depth,
             height: options.height,
+            widthCm: options.width * 100,
+            depthCm: options.depth * 100,
+            heightCm: options.height * 100,
             color: objectColors.rack,
             note: options.note,
             locked: false,
@@ -1390,9 +2280,14 @@ export const useStore = create<StoreState>((set, get) => {
             rackNumber,
             rackCode,
             shelfCount: options.shelfCount,
-            binsPerShelf: options.binsPerShelf,
+            binsPerShelf: options.positionsPerShelf,
+            positionsPerShelf: options.positionsPerShelf,
+            defaultLocationCapacity: options.defaultLocationCapacity,
+            depthSlots: options.depthSlots,
+            stackLevels: options.stackLevels,
             orientation: 'horizontal',
             productGroup: options.productGroup,
+            productCategory: options.productGroup,
             showDimensions: true,
           } as Rack,
           state.warehouseConfig,
@@ -1418,8 +2313,20 @@ export const useStore = create<StoreState>((set, get) => {
           updated.rackGroup = identity.rackGroup;
           updated.rackNumber = identity.rackNumber;
           updated.rackCode = identity.rackCode;
+          updated.widthCm = Math.max(1, Number(updated.widthCm || updated.width * 100));
+          updated.depthCm = Math.max(1, Number(updated.depthCm || updated.depth * 100));
+          updated.heightCm = Math.max(1, Number(updated.heightCm || updated.height * 100));
+          updated.width = updated.widthCm / 100;
+          updated.depth = updated.depthCm / 100;
+          updated.height = updated.heightCm / 100;
           updated.shelfCount = Math.max(1, Math.floor(Number(updated.shelfCount || 1)));
-          updated.binsPerShelf = Math.max(1, Math.floor(Number(updated.binsPerShelf || 1)));
+          updated.positionsPerShelf = Math.max(1, Math.floor(Number(updated.positionsPerShelf || updated.binsPerShelf || 1)));
+          updated.binsPerShelf = updated.positionsPerShelf;
+          updated.depthSlots = Math.max(1, Math.floor(Number(updated.depthSlots || 1)));
+          updated.stackLevels = Math.max(1, Math.floor(Number(updated.stackLevels || 1)));
+          updated.defaultLocationCapacity = Math.max(1, Math.floor(Number(updated.defaultLocationCapacity || updated.depthSlots * updated.stackLevels || DEFAULT_LOCATION_CAPACITY)));
+          updated.productGroup = normalizeProductGroup(updated.productGroup);
+          updated.productCategory = normalizeProductGroup(updated.productCategory || updated.productGroup);
         }
         return clampObjectToWarehouse(updated, state.warehouseConfig, state.gridSettings);
       });
@@ -1431,11 +2338,24 @@ export const useStore = create<StoreState>((set, get) => {
       const deletedCodes = deleted?.type === 'rack'
         ? new Set(generateRackLocationCodes(deleted, state.locationCodeSettings).map((location) => location.locationCode))
         : new Set<string>();
+      const deletedPackageIds = new Set(
+        state.locationStocks
+          .filter((stock) => deletedCodes.has(stock.locationCode))
+          .flatMap((stock) => (stock.packages || []).map((item) => item.packageId)),
+      );
       return savePlanInState(state, {
         objects: state.objects.filter((object) => object.id !== id),
         locationStocks: deletedCodes.size
           ? state.locationStocks.filter((stock) => !deletedCodes.has(stock.locationCode))
           : state.locationStocks,
+        importedPackages: deletedPackageIds.size
+          ? state.importedPackages.map((item) =>
+              deletedPackageIds.has(item.packageId) ? { ...item, status: 'unplaced' as const, placement: null } : item,
+            )
+          : state.importedPackages,
+        locationCapacityOverrides: deletedCodes.size
+          ? state.locationCapacityOverrides.filter((override) => !deletedCodes.has(override.locationCode))
+          : state.locationCapacityOverrides,
         selectedLocationCode: state.selectedLocationCode && deletedCodes.has(state.selectedLocationCode) ? null : state.selectedLocationCode,
         selectedId: state.selectedId === id ? null : state.selectedId,
       });
@@ -1484,6 +2404,8 @@ export const useStore = create<StoreState>((set, get) => {
         objects: state.objects,
         products: state.products,
         locationStocks: state.locationStocks,
+        importedPackages: state.importedPackages,
+        locationCapacityOverrides: state.locationCapacityOverrides,
         locationCodeSettings: state.locationCodeSettings,
         createdAt: getFullPlans().find((item) => item.id === state.activePlanId)?.createdAt || now(),
         updatedAt: now(),
@@ -1508,7 +2430,13 @@ export const useStore = create<StoreState>((set, get) => {
           objects: plan.objects,
           products: plan.products,
           locationStocks: plan.locationStocks,
+          importedPackages: plan.importedPackages || [],
+          locationCapacityOverrides: plan.locationCapacityOverrides,
           selectedLocationCode: null,
+          selectedPackageId: null,
+          packageSearchQuery: '',
+          highlightedPackageIds: [],
+          focusedLocationCode: null,
           selectedId: null,
           plans: planSummaries(plans),
           activePlanId: plan.id,
@@ -1532,13 +2460,27 @@ export const useStore = create<StoreState>((set, get) => {
 
     exportRacksCSV: () => racksToCsv(get().objects),
 
-    exportSummaryCSV: () => summaryToCsv(calculateAreaUsage(get().objects, get().warehouseConfig, get().locationStocks)),
+    exportSummaryCSV: () => summaryToCsv(calculateAreaUsage(
+      get().objects,
+      get().warehouseConfig,
+      get().locationStocks,
+      get().locationCapacityOverrides,
+    )),
 
     generateLocationCodes: (rackId) => {
       const state = get();
-      if (!rackId) return generateAllLocationCodes(state.objects, state.locationCodeSettings, state.locationStocks);
+      if (!rackId) {
+        return generateAllLocationCodes(
+          state.objects,
+          state.locationCodeSettings,
+          state.locationStocks,
+          state.locationCapacityOverrides,
+        );
+      }
       const rack = state.objects.find((object) => object.id === rackId && object.type === 'rack');
-      return rack?.type === 'rack' ? generateRackLocationCodes(rack, state.locationCodeSettings, state.locationStocks) : [];
+      return rack?.type === 'rack'
+        ? generateRackLocationCodes(rack, state.locationCodeSettings, state.locationStocks, state.locationCapacityOverrides)
+        : [];
     },
 
     validateLayout: () => {

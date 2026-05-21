@@ -9,7 +9,7 @@ import {
   Unlock,
 } from 'lucide-react';
 import { useStore } from '../../store/useStore';
-import { LocationCode, ProductGroup, ProductItem, WarehouseObject } from '../../types';
+import { LocationCode, ProductGroup, ProductItem, WarehouseImportedPackage, WarehouseObject } from '../../types';
 import {
   buildRackCode,
   displayMeasure,
@@ -44,6 +44,8 @@ export function RightPanel() {
   const selectedLocationCode = useStore((state) => state.selectedLocationCode);
   const objects = useStore((state) => state.objects);
   const products = useStore((state) => state.products);
+  const importedPackages = useStore((state) => state.importedPackages);
+  const selectedPackageId = useStore((state) => state.selectedPackageId);
   const unitPreference = useStore((state) => state.unitPreference);
   const warehouseConfig = useStore((state) => state.warehouseConfig);
   const warnings = useStore((state) => state.warnings);
@@ -57,12 +59,21 @@ export function RightPanel() {
   const adjustLocationPackages = useStore((state) => state.adjustLocationPackages);
   const clearLocation = useStore((state) => state.clearLocation);
   const moveLocationStock = useStore((state) => state.moveLocationStock);
+  const setLocationCapacity = useStore((state) => state.setLocationCapacity);
+  const applyRackCapacity = useStore((state) => state.applyRackCapacity);
+  const placeImportedPackage = useStore((state) => state.placeImportedPackage);
+  const unplaceImportedPackage = useStore((state) => state.unplaceImportedPackage);
+  const focusPackage = useStore((state) => state.focusPackage);
   const placementStatus = useStore((state) => state.placementStatus);
+  const packagePlacementStatus = useStore((state) => state.packagePlacementStatus);
   const [labelMode, setLabelMode] = useState<'rack' | 'all' | 'single'>('rack');
   const [labelSize, setLabelSize] = useState(labelSizes[1]);
   const [dropRequest, setDropRequest] = useState<{ product: ProductItem; location: LocationCode; count: string } | null>(null);
 
   const obj = objects.find((object) => object.id === selectedId);
+  const selectedPackage = selectedPackageId
+    ? importedPackages.find((item) => item.packageId === selectedPackageId) || null
+    : null;
 
   const selectedWarnings = useMemo(
     () => warnings.filter((warning) => obj && warning.objectIds.includes(obj.id)),
@@ -71,8 +82,20 @@ export function RightPanel() {
 
   if (!obj) {
     return (
-      <aside className="z-10 flex w-96 shrink-0 items-center justify-center border-l border-slate-800 bg-slate-900/95 p-6 text-center text-sm text-slate-500">
-        Düzenlemek için 2D/3D sahneden veya katman listesinden bir obje seçin.
+      <aside className="z-10 flex w-96 shrink-0 flex-col overflow-y-auto border-l border-slate-800 bg-slate-900/95 p-4 text-slate-200">
+        {selectedPackage ? (
+          <PackageDetail
+            item={selectedPackage}
+            selectedLocation={null}
+            status={packagePlacementStatus}
+            onFocus={() => focusPackage(selectedPackage.packageId)}
+            onUnplace={() => unplaceImportedPackage(selectedPackage.packageId)}
+          />
+        ) : (
+          <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-slate-500">
+            Düzenlemek için 2D/3D sahneden veya katman listesinden bir obje seçin.
+          </div>
+        )}
       </aside>
     );
   }
@@ -170,6 +193,21 @@ export function RightPanel() {
         </div>
       )}
 
+      {selectedPackage && (
+        <PackageDetail
+          item={selectedPackage}
+          selectedLocation={selectedLocation}
+          status={packagePlacementStatus}
+          onFocus={() => focusPackage(selectedPackage.packageId)}
+          onUnplace={() => unplaceImportedPackage(selectedPackage.packageId)}
+          onPlace={
+            selectedLocation && selectedPackage.status === 'unplaced'
+              ? () => placeImportedPackage(selectedPackage.packageId, selectedLocation.locationCode)
+              : undefined
+          }
+        />
+      )}
+
       <section className="space-y-3 border-b border-slate-800 pb-4">
         <TextInput label="Ad" value={obj.name} onChange={(value) => handleChange({ name: value })} />
         <div className="grid grid-cols-2 gap-2">
@@ -239,13 +277,44 @@ export function RightPanel() {
               Otomatik raf kodu: <strong>{obj.rackCode}</strong>
             </div>
             <SelectInput
-              label="Ürün grubu"
-              value={obj.productGroup}
+              label="Ürün kategorisi"
+              value={obj.productCategory || obj.productGroup}
               options={productGroups}
-              onChange={(value) => handleChange({ productGroup: value as ProductGroup })}
+              onChange={(value) => handleChange({ productGroup: value as ProductGroup, productCategory: value as ProductGroup })}
             />
             <NumberInput label="Kat sayısı" value={obj.shelfCount} onChange={(value) => setNumber('shelfCount', value, false)} />
-            <NumberInput label="Göz / kat" value={obj.binsPerShelf} onChange={(value) => setNumber('binsPerShelf', value, false)} />
+            <NumberInput
+              label="Her katta göz"
+              value={obj.positionsPerShelf || obj.binsPerShelf}
+              onChange={(value) => {
+                const positionsPerShelf = Math.max(1, Math.floor(Number(value) || 1));
+                handleChange({ positionsPerShelf, binsPerShelf: positionsPerShelf });
+              }}
+            />
+            <NumberInput label="Genişlik cm" value={obj.widthCm || obj.width * 100} onChange={(value) => handleChange({ widthCm: Math.max(1, Number(value) || 1) })} />
+            <NumberInput label="Derinlik cm" value={obj.depthCm || obj.depth * 100} onChange={(value) => handleChange({ depthCm: Math.max(1, Number(value) || 1) })} />
+            <NumberInput label="Yükseklik cm" value={obj.heightCm || obj.height * 100} onChange={(value) => handleChange({ heightCm: Math.max(1, Number(value) || 1) })} />
+            <NumberInput
+              label="Lokasyon kapasitesi"
+              value={obj.defaultLocationCapacity}
+              onChange={(value) => handleChange({ defaultLocationCapacity: Math.max(1, Math.floor(Number(value) || 1)) })}
+            />
+            <NumberInput
+              label="Ön/arka sıra"
+              value={obj.depthSlots}
+              onChange={(value) => {
+                const depthSlots = Math.max(1, Math.floor(Number(value) || 1));
+                handleChange({ depthSlots, defaultLocationCapacity: depthSlots * Math.max(1, obj.stackLevels || 1) });
+              }}
+            />
+            <NumberInput
+              label="Üst üste seviye"
+              value={obj.stackLevels}
+              onChange={(value) => {
+                const stackLevels = Math.max(1, Math.floor(Number(value) || 1));
+                handleChange({ stackLevels, defaultLocationCapacity: Math.max(1, obj.depthSlots || 1) * stackLevels });
+              }}
+            />
             <SelectInput
               label="Başlangıç yönü"
               value={obj.orientation}
@@ -258,6 +327,26 @@ export function RightPanel() {
               options={['show', 'hide']}
               onChange={(value) => handleChange({ showDimensions: value === 'show' })}
             />
+          </div>
+          <div className="grid grid-cols-1 gap-2">
+            <button
+              onClick={() => applyRackCapacity(obj.id, 'all')}
+              className="border border-blue-800 bg-blue-950/30 px-2 py-2 text-xs font-bold text-blue-100 hover:bg-blue-900/40"
+            >
+              Kapasiteyi tüm lokasyonlara uygula
+            </button>
+            <button
+              onClick={() => applyRackCapacity(obj.id, 'empty')}
+              className="border border-slate-700 bg-slate-800 px-2 py-2 text-xs font-bold hover:border-blue-500"
+            >
+              Boş lokasyonların kapasitesini güncelle
+            </button>
+            <button
+              onClick={() => applyRackCapacity(obj.id, 'preserve')}
+              className="border border-slate-700 bg-slate-800 px-2 py-2 text-xs font-bold hover:border-blue-500"
+            >
+              Dolu lokasyonları koru
+            </button>
           </div>
           <div className="border border-blue-900 bg-blue-950/30 p-3 text-xs text-blue-100">
             <div>
@@ -295,7 +384,12 @@ export function RightPanel() {
                   {row.map((location) => (
                     <button
                       key={location.locationCode}
-                      onClick={() => selectLocation(location.locationCode)}
+                      onClick={() => {
+                        selectLocation(location.locationCode);
+                        if (selectedPackage?.status === 'unplaced') {
+                          placeImportedPackage(selectedPackage.packageId, location.locationCode);
+                        }
+                      }}
                       onDragOver={(event) => event.preventDefault()}
                       onDrop={(event) => handleDropOnLocation(event, location)}
                       className={`min-h-16 border px-2 py-2 text-left font-mono text-[10px] transition-colors hover:border-blue-400 ${
@@ -305,7 +399,7 @@ export function RightPanel() {
                       <div className="font-black text-blue-100">{location.locationCode}</div>
                       <div className="mt-1 truncate">{location.sku || 'Boş'}</div>
                       <div className="mt-1 font-black">
-                        {location.currentPackages}/{location.capacityPackages}
+                        {location.currentPackages}/{location.capacityPackages} paket
                       </div>
                     </button>
                   ))}
@@ -335,6 +429,11 @@ export function RightPanel() {
             </div>
           </div>
           {placementStatus && <div className="border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-300">{placementStatus}</div>}
+          <NumberInput
+            label="Lokasyon kapasitesi"
+            value={selectedLocation.capacityPackages}
+            onChange={(value) => setLocationCapacity(selectedLocation.locationCode, Math.max(1, Math.floor(Number(value) || 1)))}
+          />
           <div className="grid grid-cols-2 gap-2">
             <button
               onClick={() => {
@@ -434,13 +533,13 @@ export function RightPanel() {
         <section className="space-y-3 border-b border-slate-800 py-4">
           <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Ana Lokasyon Listesi</div>
           <div className="border border-blue-900 bg-blue-950/30 p-3 text-xs text-blue-100">
-            Standart lokasyon kodu sabit: <strong>{obj.rackCode}-K2-P3</strong>. Her ana lokasyon 4 paket kapasitelidir; alt slot kodları UI’da gösterilmez.
+            Standart lokasyon kodu sabit: <strong>{obj.rackCode}-K2-P3</strong>. Kapasite lokasyon/raf bazlıdır; alt slot kodları UI’da gösterilmez.
           </div>
           <div className="max-h-44 overflow-y-auto border border-slate-800 bg-slate-950 font-mono text-[11px]">
             {locations.map((location) => (
               <div key={location.locationCode} className="flex justify-between border-b border-slate-900 px-2 py-1.5">
                 <span className="text-blue-300">{location.locationCode}</span>
-                <span className="text-slate-500">{location.sku || 'Boş'} · {location.currentPackages}/{location.capacityPackages}</span>
+                <span className="text-slate-500">{location.sku || 'Boş'} · {location.currentPackages}/{location.capacityPackages} paket</span>
               </div>
             ))}
           </div>
@@ -474,8 +573,12 @@ export function RightPanel() {
           <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Lokasyona Paket Bırak</div>
           <div className="mt-2 text-sm font-bold text-slate-100">{dropRequest.location.locationCode}</div>
           <div className="text-xs text-slate-400">
-            {dropRequest.product.sku} · Maksimum boş kapasite:{' '}
-            {Math.max(dropRequest.location.capacityPackages - dropRequest.location.currentPackages, 0)}
+            {dropRequest.product.sku} · Lokasyon kapasitesi: {dropRequest.location.capacityPackages} · Mevcut:{' '}
+            {dropRequest.location.currentPackages}/{dropRequest.location.capacityPackages}
+          </div>
+          <div className="text-xs text-slate-400">
+            Boş kapasite: {Math.max(dropRequest.location.capacityPackages - dropRequest.location.currentPackages, 0)} · Bekleyen paket:{' '}
+            {dropRequest.product.packageCount}
           </div>
           {dropRequest.location.sku && dropRequest.location.sku !== dropRequest.product.sku && (
             <div className="mt-2 border border-red-900 bg-red-950/40 px-2 py-2 text-xs text-red-200">
@@ -487,6 +590,19 @@ export function RightPanel() {
             value={Number(dropRequest.count)}
             onChange={(value) => setDropRequest((current) => current ? { ...current, count: value } : current)}
           />
+          <div className="mt-2 flex flex-wrap gap-2">
+            {Array.from({
+              length: Math.min(4, Math.max(dropRequest.location.capacityPackages - dropRequest.location.currentPackages, 0)),
+            }, (_, index) => index + 1).map((count) => (
+              <button
+                key={count}
+                onClick={() => setDropRequest((current) => current ? { ...current, count: String(count) } : current)}
+                className="border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-bold hover:border-blue-500"
+              >
+                {count} paket koy
+              </button>
+            ))}
+          </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
             <button onClick={() => setDropRequest(null)} className="border border-slate-700 bg-slate-800 px-2 py-2 text-xs font-bold">
               Vazgeç
@@ -508,6 +624,70 @@ export function RightPanel() {
         Seçimi Temizle
       </button>
     </aside>
+  );
+}
+
+function PackageDetail({
+  item,
+  selectedLocation,
+  status,
+  onFocus,
+  onPlace,
+  onUnplace,
+}: {
+  item: WarehouseImportedPackage;
+  selectedLocation: LocationCode | null;
+  status: string | null;
+  onFocus: () => void;
+  onPlace?: () => void;
+  onUnplace: () => void;
+}) {
+  return (
+    <section className="mb-4 space-y-3 border-b border-slate-800 pb-4">
+      <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Seçili Paket</div>
+      <div className="border border-blue-900 bg-blue-950/30 p-3 text-xs text-blue-100">
+        <div className="font-mono text-sm font-black text-blue-100">{item.packageId}</div>
+        <div className="mt-1 font-semibold text-slate-100">{item.productName || item.sku}</div>
+        <div className="mt-2 grid grid-cols-2 gap-2 text-slate-300">
+          <span>SKU: {item.sku}</span>
+          <span>Kod: {item.productCode || '-'}</span>
+          <span>Durum: {item.status === 'placed' ? 'Yerleşmiş' : 'Yerleşmemiş'}</span>
+          <span>Lot: {item.lot || '-'}</span>
+          <span>Paket no: {item.packageNo || item.labelIndex}</span>
+          <span>İç adet: {item.quantityPerPackage || '-'}</span>
+          <span className="col-span-2">Ölçü: {item.dimensionsLabel || `${item.boxWidthCm} x ${item.boxDepthCm} x ${item.boxHeightCm} cm`}</span>
+          <span className="col-span-2">Lokasyon: {item.placement?.locationCode || 'Henüz yok'}</span>
+        </div>
+      </div>
+      {selectedLocation && item.status === 'unplaced' && (
+        <div className="border border-slate-800 bg-slate-950 p-2 text-xs text-slate-300">
+          Seçili lokasyon: <strong className="font-mono text-blue-200">{selectedLocation.locationCode}</strong> · Doluluk:{' '}
+          {selectedLocation.currentPackages}/{selectedLocation.capacityPackages}
+        </div>
+      )}
+      {status && <div className="border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-300">{status}</div>}
+      <div className="grid grid-cols-2 gap-2">
+        {onPlace && (
+          <button
+            onClick={onPlace}
+            className="border border-emerald-800 bg-emerald-950/40 px-2 py-2 text-xs font-bold text-emerald-100 hover:bg-emerald-900/40"
+          >
+            Bu Lokasyona Yerleştir
+          </button>
+        )}
+        <button onClick={onFocus} className="border border-blue-800 bg-slate-800 px-2 py-2 text-xs font-bold text-blue-100 hover:bg-blue-950">
+          Paketi Bul
+        </button>
+        {item.status === 'placed' && (
+          <button
+            onClick={onUnplace}
+            className="border border-red-900 bg-red-950/40 px-2 py-2 text-xs font-bold text-red-200 hover:bg-red-900/50"
+          >
+            Yerleşimi Kaldır
+          </button>
+        )}
+      </div>
+    </section>
   );
 }
 

@@ -70,10 +70,18 @@ export interface Rack extends BaseObject {
   rackGroup: string;
   rackNumber: number;
   rackCode: string;
+  widthCm: number;
+  depthCm: number;
+  heightCm: number;
   shelfCount: number;
   binsPerShelf: number;
+  positionsPerShelf: number;
+  defaultLocationCapacity: number;
+  depthSlots: number;
+  stackLevels: number;
   orientation: 'horizontal' | 'vertical';
   productGroup: ProductGroup;
+  productCategory: ProductGroup;
   showDimensions: boolean;
 }
 
@@ -162,6 +170,12 @@ export interface LocationCode {
   supplierCode: string;
   packageQuantity: number;
   totalItemQuantity: number;
+  packageIds: string;
+  boxWidthCm: number;
+  boxDepthCm: number;
+  boxHeightCm: number;
+  weightKg: number;
+  packages: PackageRecord[];
   qrContent: string;
   productQrContent: string;
 }
@@ -169,8 +183,82 @@ export interface LocationCode {
 export interface PackageRecord {
   packageId: string;
   sku: string;
+  productName: string;
+  supplierCode: string;
+  category: ProductGroup;
+  packageIndex: number;
+  totalPackages: number;
   quantityInsidePackage: number;
+  boxWidthCm: number;
+  boxDepthCm: number;
+  boxHeightCm: number;
+  weightKg: number;
+  locationCode: string;
+  status: string;
   createdAt: string;
+}
+
+export interface PackagePlacement {
+  locationCode: string;
+  rackCode: string;
+  placedAt: string;
+}
+
+export interface WarehouseImportedPackage {
+  packageId: string;
+  labelIndex: number;
+  status: 'unplaced' | 'placed';
+  placement: PackagePlacement | null;
+  sku: string;
+  productCode: string;
+  productName: string;
+  material: string;
+  type: string;
+  dimensionsLabel: string;
+  lot: string;
+  packageNo: string;
+  totalPackages: string;
+  quantityPerPackage: string;
+  productWeight: string;
+  boxWeight: string;
+  stockCount: string;
+  locationHint: string;
+  note: string;
+  printQty: number;
+  sourceProductId: string;
+  searchText: string;
+  importedAt: string;
+  category: ProductGroup;
+  boxWidthCm: number;
+  boxDepthCm: number;
+  boxHeightCm: number;
+  weightKg: number;
+  quantityInsidePackage: number;
+}
+
+export interface WarehousePackagesExport {
+  schemaVersion: 'label-printer.packages.v1';
+  exportedAt: string;
+  exportMode: 'all' | 'selected' | 'filtered' | string;
+  source: {
+    app: string;
+    fileName: string;
+  };
+  summary: {
+    packageCount: number;
+    productCount: number;
+    skuCount: number;
+  };
+  packages: Array<Partial<WarehouseImportedPackage> & Record<string, unknown>>;
+}
+
+export interface PackageImportResult {
+  success: boolean;
+  added: number;
+  skipped: number;
+  updated: number;
+  message: string;
+  error?: string;
 }
 
 export interface ProductItem {
@@ -181,12 +269,20 @@ export interface ProductItem {
   category: ProductGroup;
   packageCount: number;
   quantityInsidePackage: number;
-  packageWidthCm: number;
-  packageDepthCm: number;
-  packageHeightCm: number;
+  boxWidthCm: number;
+  boxDepthCm: number;
+  boxHeightCm: number;
+  weightKg: number;
   note: string;
+  packages?: PackageRecord[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface LocationCapacityOverride {
+  locationCode: string;
+  capacityPackages: number;
+  note?: string;
 }
 
 export interface LocationStock {
@@ -203,6 +299,10 @@ export interface LocationStock {
   lot: string;
   note: string;
   quantityInsidePackage: number;
+  boxWidthCm: number;
+  boxDepthCm: number;
+  boxHeightCm: number;
+  weightKg: number;
   packages?: PackageRecord[];
 }
 
@@ -243,6 +343,8 @@ export interface WarehousePlan {
   objects: WarehouseObject[];
   products: ProductItem[];
   locationStocks: LocationStock[];
+  importedPackages: WarehouseImportedPackage[];
+  locationCapacityOverrides: LocationCapacityOverride[];
   locationCodeSettings: LocationCodeSettings;
   createdAt: string;
   updatedAt: string;

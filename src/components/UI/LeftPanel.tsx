@@ -9,8 +9,10 @@ import {
   Map,
   Package,
   PackageCheck,
+  PackageOpen,
   Plus,
   Route,
+  Search,
   Shield,
   Square,
   Trash2,
@@ -58,8 +60,13 @@ export function LeftPanel() {
   const gridSettings = useStore((state) => state.gridSettings);
   const objects = useStore((state) => state.objects);
   const products = useStore((state) => state.products);
+  const importedPackages = useStore((state) => state.importedPackages);
+  const selectedPackageId = useStore((state) => state.selectedPackageId);
+  const packageSearchQuery = useStore((state) => state.packageSearchQuery);
   const locationStocks = useStore((state) => state.locationStocks);
+  const locationCapacityOverrides = useStore((state) => state.locationCapacityOverrides);
   const placementStatus = useStore((state) => state.placementStatus);
+  const packagePlacementStatus = useStore((state) => state.packagePlacementStatus);
   const plans = useStore((state) => state.plans);
   const activePlanId = useStore((state) => state.activePlanId);
   const viewMode = useStore((state) => state.viewMode);
@@ -82,10 +89,17 @@ export function LeftPanel() {
   const setActivePlan = useStore((state) => state.setActivePlan);
   const exportJSON = useStore((state) => state.exportJSON);
   const importJSON = useStore((state) => state.importJSON);
+  const importPackagesExport = useStore((state) => state.importPackagesExport);
+  const importPackageManifest = useStore((state) => state.importPackageManifest);
+  const selectPackage = useStore((state) => state.selectPackage);
+  const setPackageSearchQuery = useStore((state) => state.setPackageSearchQuery);
+  const focusPackage = useStore((state) => state.focusPackage);
   const exportLocationsCSV = useStore((state) => state.exportLocationsCSV);
   const exportRacksCSV = useStore((state) => state.exportRacksCSV);
   const exportSummaryCSV = useStore((state) => state.exportSummaryCSV);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const manifestInputRef = useRef<HTMLInputElement>(null);
+  const packagesInputRef = useRef<HTMLInputElement>(null);
 
   const [form, setForm] = useState({
     name: warehouseConfig.name,
@@ -98,7 +112,10 @@ export function LeftPanel() {
     rackNumber: '1',
     count: '1',
     shelfCount: '4',
-    binsPerShelf: '7',
+    positionsPerShelf: '7',
+    defaultLocationCapacity: '2',
+    depthSlots: '2',
+    stackLevels: '1',
     width: '1.8',
     depth: '0.6',
     height: '1.8',
@@ -112,11 +129,13 @@ export function LeftPanel() {
     category: 'Alüminyum' as ProductGroup,
     packageCount: '10',
     quantityInsidePackage: '75',
-    packageWidthCm: '36',
-    packageDepthCm: '25',
-    packageHeightCm: '25',
+    boxWidthCm: '36',
+    boxDepthCm: '25',
+    boxHeightCm: '25',
+    weightKg: '0',
     note: '',
   });
+  const [packageFilter, setPackageFilter] = useState<'all' | 'unplaced' | 'placed'>('unplaced');
 
   useEffect(() => {
     setForm({
@@ -165,6 +184,30 @@ export function LeftPanel() {
     event.currentTarget.value = '';
   };
 
+  const handleManifestImport = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (readerEvent) => {
+      const result = readerEvent.target?.result;
+      if (typeof result === 'string') importPackageManifest(result);
+    };
+    reader.readAsText(file);
+    event.currentTarget.value = '';
+  };
+
+  const handlePackagesExportImport = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (readerEvent) => {
+      const result = readerEvent.target?.result;
+      if (typeof result === 'string') importPackagesExport(result);
+    };
+    reader.readAsText(file);
+    event.currentTarget.value = '';
+  };
+
   const add = (type: WarehouseObjectNoId['type']) => {
     const rackGroup = normalizeRackGroup(rackDraft.rackGroup);
     const rackNumber = Number(rackDraft.rackNumber) || getNextRackNumber(objects, rackGroup);
@@ -184,20 +227,31 @@ export function LeftPanel() {
     };
 
     if (type === 'rack') {
+      const widthMeters = toMeters(Number(rackDraft.width), unitPreference);
+      const depthMeters = toMeters(Number(rackDraft.depth), unitPreference);
+      const heightMeters = toMeters(Number(rackDraft.height), unitPreference);
       addObject({
         ...base,
         type,
         name: `${rackCode} Rafı`,
-        width: toMeters(Number(rackDraft.width), unitPreference),
-        depth: toMeters(Number(rackDraft.depth), unitPreference),
-        height: toMeters(Number(rackDraft.height), unitPreference),
+        width: widthMeters,
+        depth: depthMeters,
+        height: heightMeters,
+        widthCm: Math.max(1, widthMeters * 100),
+        depthCm: Math.max(1, depthMeters * 100),
+        heightCm: Math.max(1, heightMeters * 100),
         rackGroup,
         rackNumber,
         rackCode,
         shelfCount: Math.max(1, Math.floor(Number(rackDraft.shelfCount) || 4)),
-        binsPerShelf: Math.max(1, Math.floor(Number(rackDraft.binsPerShelf) || 7)),
+        binsPerShelf: Math.max(1, Math.floor(Number(rackDraft.positionsPerShelf) || 7)),
+        positionsPerShelf: Math.max(1, Math.floor(Number(rackDraft.positionsPerShelf) || 7)),
+        defaultLocationCapacity: Math.max(1, Math.floor(Number(rackDraft.defaultLocationCapacity) || 2)),
+        depthSlots: Math.max(1, Math.floor(Number(rackDraft.depthSlots) || 1)),
+        stackLevels: Math.max(1, Math.floor(Number(rackDraft.stackLevels) || 1)),
         orientation: 'horizontal',
         productGroup: rackDraft.productGroup,
+        productCategory: rackDraft.productGroup,
         note: rackDraft.note,
         showDimensions: true,
       });
@@ -257,7 +311,10 @@ export function LeftPanel() {
       rackGroup: normalizedRackGroup,
       count: Math.max(1, Math.floor(Number(rackDraft.count) || 1)),
       shelfCount: Math.max(1, Math.floor(Number(rackDraft.shelfCount) || 4)),
-      binsPerShelf: Math.max(1, Math.floor(Number(rackDraft.binsPerShelf) || 7)),
+      positionsPerShelf: Math.max(1, Math.floor(Number(rackDraft.positionsPerShelf) || 7)),
+      defaultLocationCapacity: Math.max(1, Math.floor(Number(rackDraft.defaultLocationCapacity) || 2)),
+      depthSlots: Math.max(1, Math.floor(Number(rackDraft.depthSlots) || 1)),
+      stackLevels: Math.max(1, Math.floor(Number(rackDraft.stackLevels) || 1)),
       width: toMeters(Number(rackDraft.width), unitPreference),
       depth: toMeters(Number(rackDraft.depth), unitPreference),
       height: toMeters(Number(rackDraft.height), unitPreference),
@@ -275,9 +332,10 @@ export function LeftPanel() {
       category: productDraft.category,
       packageCount,
       quantityInsidePackage: Math.max(0, Math.floor(Number(productDraft.quantityInsidePackage) || 0)),
-      packageWidthCm: Math.max(0, Number(productDraft.packageWidthCm) || 0),
-      packageDepthCm: Math.max(0, Number(productDraft.packageDepthCm) || 0),
-      packageHeightCm: Math.max(0, Number(productDraft.packageHeightCm) || 0),
+      boxWidthCm: Math.max(0, Number(productDraft.boxWidthCm) || 0),
+      boxDepthCm: Math.max(0, Number(productDraft.boxDepthCm) || 0),
+      boxHeightCm: Math.max(0, Number(productDraft.boxHeightCm) || 0),
+      weightKg: Math.max(0, Number(productDraft.weightKg) || 0),
       note: productDraft.note,
     });
   };
@@ -300,9 +358,38 @@ export function LeftPanel() {
       }, {}),
     [locationStocks],
   );
+  const visibleImportedPackages = useMemo(() => {
+    const query = packageSearchQuery.trim().toLocaleLowerCase('tr-TR');
+    return importedPackages.filter((item) => {
+      if (packageFilter !== 'all' && item.status !== packageFilter) return false;
+      if (!query) return true;
+      return [
+        item.packageId,
+        item.sku,
+        item.productCode,
+        item.productName,
+        item.material,
+        item.type,
+        item.dimensionsLabel,
+        item.lot,
+        item.packageNo,
+        item.placement?.locationCode || '',
+        item.locationHint,
+        item.searchText,
+      ].join(' ').toLocaleLowerCase('tr-TR').includes(query);
+    });
+  }, [importedPackages, packageFilter, packageSearchQuery]);
+  const importedPackageCounts = useMemo(
+    () => ({
+      all: importedPackages.length,
+      unplaced: importedPackages.filter((item) => item.status === 'unplaced').length,
+      placed: importedPackages.filter((item) => item.status === 'placed').length,
+    }),
+    [importedPackages],
+  );
   const packageUsage = useMemo(
-    () => calculateAreaUsage(objects, warehouseConfig, locationStocks),
-    [objects, warehouseConfig, locationStocks],
+    () => calculateAreaUsage(objects, warehouseConfig, locationStocks, locationCapacityOverrides),
+    [objects, warehouseConfig, locationStocks, locationCapacityOverrides],
   );
 
   return (
@@ -435,8 +522,55 @@ export function LeftPanel() {
               <input
                 type="number"
                 min="1"
-                value={rackDraft.binsPerShelf}
-                onChange={(event) => setRackDraft((current) => ({ ...current, binsPerShelf: event.target.value }))}
+                value={rackDraft.positionsPerShelf}
+                onChange={(event) => setRackDraft((current) => ({ ...current, positionsPerShelf: event.target.value }))}
+                className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+              />
+            </label>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            <label>
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Lok. kapasite</span>
+              <input
+                type="number"
+                min="1"
+                value={rackDraft.defaultLocationCapacity}
+                onChange={(event) => setRackDraft((current) => ({ ...current, defaultLocationCapacity: event.target.value }))}
+                className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+              />
+            </label>
+            <label>
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Ön/arka</span>
+              <input
+                type="number"
+                min="1"
+                value={rackDraft.depthSlots}
+                onChange={(event) => {
+                  const depthSlots = Math.max(1, Math.floor(Number(event.target.value) || 1));
+                  setRackDraft((current) => ({
+                    ...current,
+                    depthSlots: String(depthSlots),
+                    defaultLocationCapacity: String(depthSlots * Math.max(1, Math.floor(Number(current.stackLevels) || 1))),
+                  }));
+                }}
+                className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+              />
+            </label>
+            <label>
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Üst üste</span>
+              <input
+                type="number"
+                min="1"
+                value={rackDraft.stackLevels}
+                onChange={(event) => {
+                  const stackLevels = Math.max(1, Math.floor(Number(event.target.value) || 1));
+                  setRackDraft((current) => ({
+                    ...current,
+                    stackLevels: String(stackLevels),
+                    defaultLocationCapacity: String(Math.max(1, Math.floor(Number(current.depthSlots) || 1)) * stackLevels),
+                  }));
+                }}
                 className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
               />
             </label>
@@ -497,6 +631,120 @@ export function LeftPanel() {
             >
               Grup Oluştur
             </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="border-b border-slate-800 py-4">
+        <div className="mb-3 flex items-center gap-2 text-[11px] font-black uppercase tracking-widest text-slate-500">
+          <PackageOpen className="h-4 w-4 text-blue-400" />
+          Paket Yerleştirme
+        </div>
+        <input
+          ref={packagesInputRef}
+          type="file"
+          accept=".json,application/json"
+          className="hidden"
+          onChange={handlePackagesExportImport}
+        />
+        <div className="space-y-3">
+          <button
+            onClick={() => packagesInputRef.current?.click()}
+            className="flex w-full items-center justify-center gap-2 border border-emerald-800 bg-emerald-950/30 px-3 py-2 text-xs font-black uppercase tracking-wider text-emerald-100 hover:bg-emerald-900/40"
+          >
+            <FileUp className="h-4 w-4" />
+            packages-export.json Al
+          </button>
+
+          <label className="block">
+            <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Paket ara</span>
+            <div className="flex items-center border border-slate-700 bg-slate-950 px-2 focus-within:border-blue-500">
+              <Search className="h-4 w-4 shrink-0 text-slate-500" />
+              <input
+                value={packageSearchQuery}
+                onChange={(event) => setPackageSearchQuery(event.target.value)}
+                placeholder="SKU, paket no, lot, lokasyon..."
+                className="min-w-0 flex-1 bg-transparent px-2 py-2 text-sm outline-none"
+              />
+            </div>
+          </label>
+
+          <div className="grid grid-cols-3 gap-1">
+            {([
+              ['all', `Tümü ${importedPackageCounts.all}`],
+              ['unplaced', `Yerleşmemiş ${importedPackageCounts.unplaced}`],
+              ['placed', `Yerleşmiş ${importedPackageCounts.placed}`],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => setPackageFilter(value)}
+                className={`px-2 py-2 text-[10px] font-black uppercase ${
+                  packageFilter === value ? 'bg-blue-600 text-white' : 'border border-slate-700 bg-slate-950 text-slate-400 hover:text-white'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {packagePlacementStatus && (
+            <div className="border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-300">{packagePlacementStatus}</div>
+          )}
+
+          <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+            {visibleImportedPackages.map((item) => (
+              <button
+                key={item.packageId}
+                onClick={() => selectPackage(item.packageId)}
+                className={`w-full border p-3 text-left text-xs transition-colors ${
+                  selectedPackageId === item.packageId
+                    ? 'border-blue-500 bg-blue-950/40 text-blue-100'
+                    : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-blue-700'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate font-mono text-sm font-black text-blue-200">{item.packageId}</div>
+                    <div className="truncate font-semibold text-slate-100">{item.productName || item.sku}</div>
+                  </div>
+                  <span className={`shrink-0 border px-1.5 py-0.5 text-[9px] font-black uppercase ${
+                    item.status === 'placed'
+                      ? 'border-emerald-700 bg-emerald-950/40 text-emerald-200'
+                      : 'border-amber-700 bg-amber-950/40 text-amber-200'
+                  }`}
+                  >
+                    {item.status === 'placed' ? 'Yerleşmiş' : 'Bekliyor'}
+                  </span>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-1 font-mono text-[10px] text-slate-400">
+                  <span>SKU: {item.sku}</span>
+                  <span>Kod: {item.productCode || '-'}</span>
+                  <span>Paket: {item.packageNo || item.labelIndex}</span>
+                  <span>İç adet: {item.quantityPerPackage || '-'}</span>
+                  <span>Lot: {item.lot || '-'}</span>
+                  <span>{item.material || item.category}</span>
+                </div>
+                {item.placement?.locationCode && (
+                  <div className="mt-2 font-mono text-[11px] text-emerald-300">Lokasyon: {item.placement.locationCode}</div>
+                )}
+                <div className="mt-2 flex justify-end">
+                  <span
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      focusPackage(item.packageId);
+                    }}
+                    className="border border-blue-800 px-2 py-1 text-[10px] font-black uppercase text-blue-200 hover:bg-blue-950"
+                  >
+                    Paketi Bul
+                  </span>
+                </div>
+              </button>
+            ))}
+            {visibleImportedPackages.length === 0 && (
+              <div className="border border-slate-800 bg-slate-950 p-3 text-xs text-slate-500">
+                packages-export.json import edildiğinde paketler burada listelenir.
+              </div>
+            )}
           </div>
         </div>
       </section>
@@ -570,10 +818,10 @@ export function LeftPanel() {
             </label>
           </div>
           <div className="grid grid-cols-3 gap-2">
-            {(['packageWidthCm', 'packageDepthCm', 'packageHeightCm'] as const).map((field) => (
+            {(['boxWidthCm', 'boxDepthCm', 'boxHeightCm'] as const).map((field) => (
               <label key={field}>
                 <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                  {field === 'packageWidthCm' ? 'En' : field === 'packageDepthCm' ? 'Boy' : 'Yük.'} cm
+                  {field === 'boxWidthCm' ? 'En' : field === 'boxDepthCm' ? 'Boy' : 'Yük.'} cm
                 </span>
                 <input
                   type="number"
@@ -585,6 +833,16 @@ export function LeftPanel() {
               </label>
             ))}
           </div>
+          <label>
+            <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Paket ağırlığı kg</span>
+            <input
+              type="number"
+              min="0"
+              value={productDraft.weightKg}
+              onChange={(event) => setProductDraft((current) => ({ ...current, weightKg: event.target.value }))}
+              className="w-full border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-blue-500"
+            />
+          </label>
           <div className="grid grid-cols-2 gap-2">
             <button
               onClick={handleAddProduct}
@@ -648,7 +906,7 @@ export function LeftPanel() {
                 </div>
                 <div className="mt-2 flex items-center justify-between gap-2">
                   <span className="text-[10px] text-slate-500">
-                    {product.packageWidthCm} x {product.packageDepthCm} x {product.packageHeightCm} cm
+                    {product.boxWidthCm} x {product.boxDepthCm} x {product.boxHeightCm} cm · {product.weightKg} kg
                   </span>
                   <button
                     onClick={() => autoPlaceProduct(product.id, product.packageCount)}
@@ -782,6 +1040,7 @@ export function LeftPanel() {
       <section className="border-b border-slate-800 py-4">
         <div className="mb-3 text-[11px] font-black uppercase tracking-widest text-slate-500">Dışa Aktar / İçe Aktar</div>
         <input ref={fileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImport} />
+        <input ref={manifestInputRef} type="file" accept=".csv,text/csv" className="hidden" onChange={handleManifestImport} />
         <div className="grid grid-cols-2 gap-2">
           <button
             onClick={() => fileInputRef.current?.click()}
@@ -813,10 +1072,17 @@ export function LeftPanel() {
           </button>
           <button
             onClick={() => downloadText('depo-ozet.csv', exportSummaryCSV(), 'text/csv;charset=utf-8')}
-            className="col-span-2 flex items-center justify-center gap-2 border border-slate-700 bg-slate-800 px-2 py-2 text-xs font-bold hover:border-blue-500"
+            className="flex items-center justify-center gap-2 border border-slate-700 bg-slate-800 px-2 py-2 text-xs font-bold hover:border-blue-500"
           >
             <Upload className="h-4 w-4 rotate-180" />
             Depo Özet CSV
+          </button>
+          <button
+            onClick={() => manifestInputRef.current?.click()}
+            className="flex items-center justify-center gap-2 border border-emerald-800 bg-emerald-950/30 px-2 py-2 text-xs font-bold text-emerald-100 hover:bg-emerald-900/40"
+          >
+            <FileUp className="h-4 w-4" />
+            Manifest CSV Al
           </button>
         </div>
       </section>
