@@ -394,7 +394,7 @@ export function LeftPanel() {
 
   return (
     <aside className="z-10 flex w-80 shrink-0 flex-col overflow-y-auto border-r border-slate-800 bg-slate-900/95 p-4 text-slate-200">
-      <section className="border-b border-slate-800 pb-4">
+      <section className="border-b border-slate-800 pb-4" style={{ order: 0 }}>
         <div className="mb-3 flex items-center gap-2 text-[11px] font-black uppercase tracking-widest text-slate-500">
           <Warehouse className="h-4 w-4 text-blue-400" />
           Depo Ayarları
@@ -464,7 +464,7 @@ export function LeftPanel() {
         </div>
       </section>
 
-      <section className="border-b border-slate-800 py-4">
+      <section className="border-b border-slate-800 py-4" style={{ order: 30 }}>
         <div className="mb-3 flex items-center gap-2 text-[11px] font-black uppercase tracking-widest text-slate-500">
           <Package className="h-4 w-4 text-blue-400" />
           Raf Ekle / Grup Oluştur
@@ -635,10 +635,10 @@ export function LeftPanel() {
         </div>
       </section>
 
-      <section className="border-b border-slate-800 py-4">
+      <section className="border-b border-slate-800 py-4" style={{ order: 10 }}>
         <div className="mb-3 flex items-center gap-2 text-[11px] font-black uppercase tracking-widest text-slate-500">
           <PackageOpen className="h-4 w-4 text-blue-400" />
-          Paket Yerleştirme
+          Paket Kabul / Yerleştirme
         </div>
         <input
           ref={packagesInputRef}
@@ -749,10 +749,10 @@ export function LeftPanel() {
         </div>
       </section>
 
-      <section className="border-b border-slate-800 py-4">
+      <section className="border-b border-slate-800 py-4" style={{ order: 20 }}>
         <div className="mb-3 flex items-center gap-2 text-[11px] font-black uppercase tracking-widest text-slate-500">
           <PackageCheck className="h-4 w-4 text-blue-400" />
-          SKU / Ürün Listesi
+          SKU ve Otomatik Yerleştirme
         </div>
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-2">
@@ -922,7 +922,7 @@ export function LeftPanel() {
         </div>
       </section>
 
-      <section className="border-b border-slate-800 py-4">
+      <section className="border-b border-slate-800 py-4" style={{ order: 40 }}>
         <div className="mb-3 text-[11px] font-black uppercase tracking-widest text-slate-500">Diğer Objeler</div>
         <div className="grid grid-cols-2 gap-2">
           {objectButtons.map(({ type, label, icon: Icon }) => (
@@ -945,7 +945,7 @@ export function LeftPanel() {
         </div>
       </section>
 
-      <section className="border-b border-slate-800 py-4">
+      <section className="border-b border-slate-800 py-4" style={{ order: 50 }}>
         <div className="mb-3 text-[11px] font-black uppercase tracking-widest text-slate-500">Görünüm Ayarları</div>
         <div className="grid grid-cols-2 gap-2">
           {viewOptions.map((option) => (
@@ -998,7 +998,7 @@ export function LeftPanel() {
         </div>
       </section>
 
-      <section className="border-b border-slate-800 py-4">
+      <section className="border-b border-slate-800 py-4" style={{ order: 60 }}>
         <div className="mb-3 text-[11px] font-black uppercase tracking-widest text-slate-500">Planlar</div>
         <div className="space-y-2">
           <select
@@ -1037,7 +1037,7 @@ export function LeftPanel() {
         </div>
       </section>
 
-      <section className="border-b border-slate-800 py-4">
+      <section className="border-b border-slate-800 py-4" style={{ order: 70 }}>
         <div className="mb-3 text-[11px] font-black uppercase tracking-widest text-slate-500">Dışa Aktar / İçe Aktar</div>
         <input ref={fileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImport} />
         <input ref={manifestInputRef} type="file" accept=".csv,text/csv" className="hidden" onChange={handleManifestImport} />
@@ -1087,8 +1087,8 @@ export function LeftPanel() {
         </div>
       </section>
 
-      <section className="min-h-48 flex-1 py-4">
-        <div className="mb-3 text-[11px] font-black uppercase tracking-widest text-slate-500">Depo Katmanları</div>
+      <section className="min-h-48 flex-1 py-4" style={{ order: 80 }}>
+        <div className="mb-3 text-[11px] font-black uppercase tracking-widest text-slate-500">Raflar ve Alanlar</div>
         <div className="space-y-1">
           {layers.map((object) => (
             <button

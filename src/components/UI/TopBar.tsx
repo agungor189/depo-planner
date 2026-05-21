@@ -84,7 +84,7 @@ export function TopBar() {
           DS
         </div>
         <div className="min-w-0">
-          <h1 className="truncate text-base font-black uppercase tracking-wide">DSDST Depo Planlayıcı</h1>
+          <h1 className="truncate text-base font-black uppercase tracking-wide">DSDST Depo Organizasyon</h1>
           <p className="truncate text-xs text-slate-500">
             {warehouseConfig.name} · {trimNumber(warehouseConfig.width)} x {trimNumber(warehouseConfig.length)} x{' '}
             {trimNumber(warehouseConfig.height)} m · {saveStatus}

@@ -54,6 +54,7 @@ export function RightPanel() {
   const duplicateObject = useStore((state) => state.duplicateObject);
   const generateLocationCodes = useStore((state) => state.generateLocationCodes);
   const selectObject = useStore((state) => state.selectObject);
+  const selectPackage = useStore((state) => state.selectPackage);
   const selectLocation = useStore((state) => state.selectLocation);
   const placeProductInLocation = useStore((state) => state.placeProductInLocation);
   const adjustLocationPackages = useStore((state) => state.adjustLocationPackages);
@@ -74,6 +75,7 @@ export function RightPanel() {
   const selectedPackage = selectedPackageId
     ? importedPackages.find((item) => item.packageId === selectedPackageId) || null
     : null;
+  const importedPackageIds = new Set(importedPackages.map((item) => item.packageId));
 
   const selectedWarnings = useMemo(
     () => warnings.filter((warning) => obj && warning.objectIds.includes(obj.id)),
@@ -115,6 +117,11 @@ export function RightPanel() {
           locations.filter((location) => location.shelfNumber === shelfNumber),
         )
       : [];
+  const packageAction =
+    selectedPackage && selectedLocation && selectedPackage.placement?.locationCode !== selectedLocation.locationCode
+      ? () => placeImportedPackage(selectedPackage.packageId, selectedLocation.locationCode)
+      : undefined;
+  const packageActionLabel = selectedPackage?.status === 'placed' ? 'Bu Lokasyona Taşı' : 'Bu Lokasyona Yerleştir';
 
   const handleChange = (updates: Record<string, unknown>) => {
     updateObject(obj.id, updates as Partial<WarehouseObject>);
@@ -162,7 +169,7 @@ export function RightPanel() {
     <aside className="z-10 flex w-96 shrink-0 flex-col overflow-y-auto border-l border-slate-800 bg-slate-900/95 p-4 text-slate-200">
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
-          <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Seçili Obje</div>
+          <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Seçili Raf / Alan</div>
           <h2 className="mt-1 text-lg font-bold text-slate-100">{objectTypeLabel}</h2>
           <div className="mt-1 font-mono text-[11px] text-slate-500">{obj.id.slice(0, 8)}</div>
         </div>
@@ -200,11 +207,20 @@ export function RightPanel() {
           status={packagePlacementStatus}
           onFocus={() => focusPackage(selectedPackage.packageId)}
           onUnplace={() => unplaceImportedPackage(selectedPackage.packageId)}
-          onPlace={
-            selectedLocation && selectedPackage.status === 'unplaced'
-              ? () => placeImportedPackage(selectedPackage.packageId, selectedLocation.locationCode)
-              : undefined
-          }
+          onPlace={packageAction}
+          placeLabel={packageActionLabel}
+        />
+      )}
+
+      {obj.type === 'rack' && (
+        <RackInventoryPanel
+          rackCode={obj.rackCode}
+          locations={locations}
+          selectedLocationCode={selectedLocationCode}
+          selectedPackageId={selectedPackageId}
+          onSelectLocation={selectLocation}
+          onSelectPackage={selectPackage}
+          onFocusPackage={focusPackage}
         />
       )}
 
@@ -386,7 +402,7 @@ export function RightPanel() {
                       key={location.locationCode}
                       onClick={() => {
                         selectLocation(location.locationCode);
-                        if (selectedPackage?.status === 'unplaced') {
+                        if (selectedPackage && selectedPackage.placement?.locationCode !== location.locationCode) {
                           placeImportedPackage(selectedPackage.packageId, location.locationCode);
                         }
                       }}
@@ -428,7 +444,39 @@ export function RightPanel() {
               <span className="col-span-2">Toplam ürün adedi: {selectedLocation.totalItemQuantity}</span>
             </div>
           </div>
+          {selectedLocation.packages.length > 0 && (
+            <div className="border border-slate-800 bg-slate-950 p-3 text-xs">
+              <div className="mb-2 text-[10px] font-black uppercase tracking-widest text-slate-500">Lokasyondaki Paketler</div>
+              <div className="flex flex-wrap gap-2">
+                {selectedLocation.packages.map((item) => {
+                  const isImported = importedPackageIds.has(item.packageId);
+                  return (
+                    <button
+                      key={item.packageId}
+                      disabled={!isImported}
+                      onClick={() => isImported && selectPackage(item.packageId)}
+                      className={`border px-2 py-1 font-mono text-[10px] ${
+                        isImported
+                          ? 'border-blue-800 bg-blue-950/30 text-blue-200 hover:bg-blue-900/40'
+                          : 'border-slate-800 bg-slate-900 text-slate-500'
+                      }`}
+                    >
+                      {item.packageId}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           {placementStatus && <div className="border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-300">{placementStatus}</div>}
+          {selectedPackage && packageAction && (
+            <button
+              onClick={packageAction}
+              className="w-full border border-emerald-800 bg-emerald-950/40 px-3 py-2 text-xs font-black uppercase tracking-wider text-emerald-100 hover:bg-emerald-900/40"
+            >
+              {selectedPackage.packageId} → {selectedLocation.locationCode}
+            </button>
+          )}
           <NumberInput
             label="Lokasyon kapasitesi"
             value={selectedLocation.capacityPackages}
@@ -633,6 +681,7 @@ function PackageDetail({
   status,
   onFocus,
   onPlace,
+  placeLabel = 'Bu Lokasyona Yerleştir',
   onUnplace,
 }: {
   item: WarehouseImportedPackage;
@@ -640,6 +689,7 @@ function PackageDetail({
   status: string | null;
   onFocus: () => void;
   onPlace?: () => void;
+  placeLabel?: string;
   onUnplace: () => void;
 }) {
   return (
@@ -672,7 +722,7 @@ function PackageDetail({
             onClick={onPlace}
             className="border border-emerald-800 bg-emerald-950/40 px-2 py-2 text-xs font-bold text-emerald-100 hover:bg-emerald-900/40"
           >
-            Bu Lokasyona Yerleştir
+            {placeLabel}
           </button>
         )}
         <button onClick={onFocus} className="border border-blue-800 bg-slate-800 px-2 py-2 text-xs font-bold text-blue-100 hover:bg-blue-950">
@@ -687,6 +737,186 @@ function PackageDetail({
           </button>
         )}
       </div>
+    </section>
+  );
+}
+
+function RackInventoryPanel({
+  rackCode,
+  locations,
+  selectedLocationCode,
+  selectedPackageId,
+  onSelectLocation,
+  onSelectPackage,
+  onFocusPackage,
+}: {
+  rackCode: string;
+  locations: LocationCode[];
+  selectedLocationCode: string | null;
+  selectedPackageId: string | null;
+  onSelectLocation: (locationCode: string) => void;
+  onSelectPackage: (packageId: string) => void;
+  onFocusPackage: (packageId: string) => void;
+}) {
+  const filledLocations = locations.filter((location) => location.currentPackages > 0);
+  const totalCapacity = locations.reduce((sum, location) => sum + location.capacityPackages, 0);
+  const filledPackages = locations.reduce((sum, location) => sum + location.currentPackages, 0);
+  const occupancyPercent = totalCapacity > 0 ? Math.round((filledPackages / totalCapacity) * 100) : 0;
+  const packageRows = filledLocations.flatMap((location) =>
+    location.packages.map((item) => ({ item, location })),
+  );
+  const skuMap = new Map<string, {
+    sku: string;
+    productName: string;
+    category: ProductGroup;
+    packageCount: number;
+    locationCodes: string[];
+    firstPackageId?: string;
+  }>();
+
+  filledLocations.forEach((location) => {
+    const key = location.sku || 'BOS';
+    const current = skuMap.get(key) || {
+      sku: key,
+      productName: location.productName || location.sku || 'Ürün',
+      category: location.category,
+      packageCount: 0,
+      locationCodes: [],
+      firstPackageId: location.packages[0]?.packageId,
+    };
+    current.packageCount += location.currentPackages;
+    current.locationCodes = Array.from(new Set([...current.locationCodes, location.locationCode]));
+    current.firstPackageId = current.firstPackageId || location.packages[0]?.packageId;
+    skuMap.set(key, current);
+  });
+
+  const skuSummaries = Array.from(skuMap.values()).sort((a, b) => b.packageCount - a.packageCount);
+
+  return (
+    <section className="mb-4 space-y-3 border-b border-slate-800 pb-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Raf İçeriği</div>
+          <div className="font-mono text-lg font-black text-blue-100">{rackCode}</div>
+        </div>
+        <div className="border border-blue-900 bg-blue-950/30 px-3 py-2 text-right">
+          <div className="text-[10px] font-black uppercase tracking-widest text-blue-300">Doluluk</div>
+          <div className="font-mono text-lg font-black text-blue-100">{occupancyPercent}%</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-4 gap-2 text-center text-xs">
+        <div className="border border-slate-800 bg-slate-950 p-2">
+          <div className="font-mono text-sm text-blue-200">{filledLocations.length}</div>
+          <div className="text-[10px] text-slate-500">dolu göz</div>
+        </div>
+        <div className="border border-slate-800 bg-slate-950 p-2">
+          <div className="font-mono text-sm text-blue-200">{locations.length - filledLocations.length}</div>
+          <div className="text-[10px] text-slate-500">boş göz</div>
+        </div>
+        <div className="border border-slate-800 bg-slate-950 p-2">
+          <div className="font-mono text-sm text-blue-200">{filledPackages}/{totalCapacity}</div>
+          <div className="text-[10px] text-slate-500">paket</div>
+        </div>
+        <div className="border border-slate-800 bg-slate-950 p-2">
+          <div className="font-mono text-sm text-blue-200">{skuSummaries.length}</div>
+          <div className="text-[10px] text-slate-500">SKU</div>
+        </div>
+      </div>
+
+      {filledLocations.length === 0 ? (
+        <div className="border border-slate-800 bg-slate-950 p-3 text-xs text-slate-500">
+          Bu rafta kayıtlı paket yok. Paket seçip raf gözüne tıklayarak yerleştirebilirsin.
+        </div>
+      ) : (
+        <>
+          <div className="space-y-2">
+            <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">SKU Dağılımı</div>
+            <div className="max-h-36 space-y-2 overflow-y-auto pr-1">
+              {skuSummaries.map((summary) => (
+                <div key={summary.sku} className={`border p-2 text-xs ${categoryColors[summary.category] || categoryColors.Diğer}`}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-mono text-sm font-black">{summary.sku}</div>
+                      <div className="truncate text-[11px]">{summary.productName}</div>
+                    </div>
+                    <div className="shrink-0 font-mono font-black">{summary.packageCount} paket</div>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {summary.locationCodes.map((locationCode) => (
+                      <button
+                        key={locationCode}
+                        onClick={() => onSelectLocation(locationCode)}
+                        className="border border-slate-600/70 bg-slate-950/40 px-1.5 py-0.5 font-mono text-[10px] hover:border-blue-300"
+                      >
+                        {locationCode}
+                      </button>
+                    ))}
+                    {summary.firstPackageId && (
+                      <button
+                        onClick={() => onFocusPackage(summary.firstPackageId || '')}
+                        className="ml-auto border border-blue-700 bg-blue-950/40 px-1.5 py-0.5 text-[10px] font-black text-blue-100 hover:bg-blue-900/40"
+                      >
+                        İlk paketi bul
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Dolu Lokasyonlar</div>
+            <div className="max-h-56 space-y-2 overflow-y-auto pr-1">
+              {filledLocations.map((location) => (
+                <div
+                  key={location.locationCode}
+                  className={`border bg-slate-950 p-2 text-xs ${
+                    selectedLocationCode === location.locationCode ? 'border-blue-500' : 'border-slate-800'
+                  }`}
+                >
+                  <button
+                    onClick={() => onSelectLocation(location.locationCode)}
+                    className="flex w-full items-start justify-between gap-2 text-left"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-mono text-sm font-black text-blue-200">{location.locationCode}</div>
+                      <div className="truncate text-slate-300">{location.sku} · {location.productName || 'Ürün'}</div>
+                    </div>
+                    <div className="shrink-0 font-mono font-black text-slate-100">
+                      {location.currentPackages}/{location.capacityPackages}
+                    </div>
+                  </button>
+                  {location.packages.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {location.packages.map((item) => (
+                        <button
+                          key={item.packageId}
+                          onClick={() => onSelectPackage(item.packageId)}
+                          className={`border px-1.5 py-0.5 font-mono text-[10px] ${
+                            selectedPackageId === item.packageId
+                              ? 'border-amber-400 bg-amber-950/50 text-amber-100'
+                              : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-blue-500'
+                          }`}
+                        >
+                          {item.packageId}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {packageRows.length === 0 && (
+            <div className="border border-amber-900 bg-amber-950/30 p-2 text-xs text-amber-200">
+              Bu rafta doluluk var ama paket ID detayı yok. Yeni Label Printer importları gerçek paket ID ile görünür.
+            </div>
+          )}
+        </>
+      )}
     </section>
   );
 }

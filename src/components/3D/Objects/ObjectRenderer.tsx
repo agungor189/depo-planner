@@ -238,7 +238,7 @@ function RackVisual({ rack, selected }: { rack: Rack; selected: boolean }) {
     event.stopPropagation();
     setSelectedId(rack.id);
     selectLocation(location.locationCode);
-    if (selectedPackage?.status === 'unplaced') {
+    if (selectedPackage && selectedPackage.placement?.locationCode !== location.locationCode) {
       placeImportedPackage(selectedPackage.packageId, location.locationCode);
     }
   };
